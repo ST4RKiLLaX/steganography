@@ -1,5 +1,5 @@
 // Security Configuration
-const MAX_MESSAGE_LENGTH = 10000000;      // 10MB text limit
+const MAX_MESSAGE_LENGTH = 10000000;      // 10MB byte limit (UTF-8 encoded)
 const MAX_IMAGE_DIMENSION = 10000;         // 10,000 x 10,000 px max
 const MAX_CAPACITY = 100000000;            // 100MB absolute max
 const MAX_FILE_SIZE = 52428800;            // 50MB file size limit
@@ -45,7 +45,7 @@ function validateMessageLength(length) {
     return false;
   }
   if (length > MAX_MESSAGE_LENGTH) {
-    showError('Message too long! Maximum length: ' + MAX_MESSAGE_LENGTH.toLocaleString() + ' characters.');
+    showError('Message too long! Maximum length: ' + MAX_MESSAGE_LENGTH.toLocaleString() + ' bytes.');
     return false;
   }
   return true;
@@ -200,7 +200,7 @@ function updateModalWithImageData(width, height, capacity) {
   modalImageInfo.appendChild(createCodeLine('Total pixels: ', totalPixels.toLocaleString(), ''));
   modalImageInfo.appendChild(createCodeLine('Total bits: ', totalBitsInImage.toLocaleString(), '(all image data)'));
   modalImageInfo.appendChild(createCodeLine('LSB bits: ', lsbBits.toLocaleString(), '(available for hiding)'));
-  modalImageInfo.appendChild(createCodeLine('Capacity: ', capacity.toLocaleString(), 'characters/bytes'));
+  modalImageInfo.appendChild(createCodeLine('Capacity: ', capacity.toLocaleString(), 'bytes'));
   
   // Update calculation steps using safe DOM creation
   var modalCalcSteps = document.getElementById('modalCalcSteps');
@@ -212,7 +212,7 @@ function updateModalWithImageData(width, height, capacity) {
   modalCalcSteps.appendChild(document.createElement('br'));
   modalCalcSteps.appendChild(createCodeLine('1. ', width.toLocaleString() + ' × ' + height.toLocaleString() + ' = ' + totalPixels.toLocaleString(), 'pixels'));
   modalCalcSteps.appendChild(createCodeLine('2. ', totalPixels.toLocaleString() + ' × 3 = ' + lsbBits.toLocaleString(), 'LSB bits (3 channels)'));
-  modalCalcSteps.appendChild(createCodeLine('3. ', lsbBits.toLocaleString() + ' ÷ 8 = ' + capacity.toLocaleString(), 'characters'));
+  modalCalcSteps.appendChild(createCodeLine('3. ', lsbBits.toLocaleString() + ' ÷ 8 = ' + capacity.toLocaleString(), 'bytes'));
 }
 
 function previewImage(file, canvasSelector, callback) {
@@ -258,8 +258,10 @@ function encodeMessage() {
       return;
     }
     
-    // Validate message length
-    if (!validateMessageLength(text.length)) {
+    // Encode to UTF-8 and validate byte length
+    var encoder = new TextEncoder();
+    var messageBytes = encoder.encode(text);
+    if (!validateMessageLength(messageBytes.length)) {
       return;
     }
 
@@ -294,11 +296,11 @@ function encodeMessage() {
     }
 
     // Check if the image is big enough to hide the message
-    var requiredBits = LENGTH_HEADER_BITS + (text.length * 8);
+    var requiredBits = LENGTH_HEADER_BITS + (messageBytes.length * 8);
     if (requiredBits > totalBits) {
-      showError('Message too long! Your message is ' + text.length.toLocaleString() + 
-                ' characters but this image can only hide ' + maxCapacity.toLocaleString() + 
-                ' characters. Please use a larger image or shorter message.');
+      showError('Message too long! Your message is ' + messageBytes.length.toLocaleString() + 
+                ' bytes but this image can only hide ' + maxCapacity.toLocaleString() + 
+                ' bytes. Please use a larger image or shorter message.');
       return;
     }
 
@@ -320,23 +322,23 @@ function encodeMessage() {
     }
     nulledContext.putImageData(original, 0, 0);
 
-    // Create 32-bit header with message length
-    var lengthBinary = text.length.toString(2);
+    // Create 32-bit header with byte length
+    var lengthBinary = messageBytes.length.toString(2);
     while(lengthBinary.length < LENGTH_HEADER_BITS) {
       lengthBinary = "0" + lengthBinary;
     }
 
-    // Convert the message to a binary string using array for better performance
+    // Convert the UTF-8 bytes to a binary string using array for better performance
     var messageBinaryArray = [];
-    for (var i = 0; i < text.length; i++) {
-      var binaryChar = text[i].charCodeAt(0).toString(2);
+    for (var i = 0; i < messageBytes.length; i++) {
+      var binaryByte = messageBytes[i].toString(2);
 
-      // Pad with 0 until the binaryChar has a length of 8 (1 Byte)
-      while(binaryChar.length < 8) {
-        binaryChar = "0" + binaryChar;
+      // Pad with 0 until the binaryByte has a length of 8 (1 Byte)
+      while(binaryByte.length < 8) {
+        binaryByte = "0" + binaryByte;
       }
 
-      messageBinaryArray.push(binaryChar);
+      messageBinaryArray.push(binaryByte);
     }
     var messageBinary = messageBinaryArray.join('');
     
@@ -363,7 +365,7 @@ function encodeMessage() {
     messageContext.putImageData(message, 0, 0);
 
     // Display capacity utilization
-    var utilizationPercent = Math.round((text.length / maxCapacity) * 100);
+    var utilizationPercent = Math.round((messageBytes.length / maxCapacity) * 100);
     var progressBar = document.getElementById('capacity-progress');
     var capacityText = document.getElementById('capacity-text');
     var capacityDetails = document.getElementById('capacity-details');
@@ -381,7 +383,7 @@ function encodeMessage() {
     progressBar.style.width = utilizationPercent + '%';
     progressBar.setAttribute('aria-valuenow', utilizationPercent);
     capacityText.textContent = utilizationPercent + '%';
-    capacityDetails.textContent = 'Hidden ' + text.length.toLocaleString() + ' characters of ' + maxCapacity.toLocaleString() + ' available. ' + (maxCapacity - text.length).toLocaleString() + ' characters remaining.';
+    capacityDetails.textContent = 'Hidden ' + messageBytes.length.toLocaleString() + ' bytes of ' + maxCapacity.toLocaleString() + ' available. ' + (maxCapacity - messageBytes.length).toLocaleString() + ' bytes remaining.';
     
     document.querySelector(".capacity-bar").style.display = 'block';
     document.querySelector(".binary").style.display = 'block';
@@ -470,7 +472,7 @@ function decodeMessage() {
     
     // Handle zero-length message
     if (messageLength === 0) {
-      showError('Image contains an empty message (0 characters).', 'decode');
+      showError('Image contains an empty message (0 bytes).', 'decode');
       return;
     }
     
@@ -493,16 +495,20 @@ function decodeMessage() {
       return;
     }
     
-    // Convert binary to text
-    var output = "";
-    for (var i = 0; i < messageBinary.length; i += 8) {
-      var c = 0;
+    // Convert binary to UTF-8 byte array
+    var byteArray = new Uint8Array(messageLength);
+    for (var i = 0; i < messageLength; i++) {
+      var byte = 0;
       for (var j = 0; j < 8; j++) {
-        c <<= 1;
-        c |= parseInt(messageBinary[i + j]);
+        byte <<= 1;
+        byte |= parseInt(messageBinary[i * 8 + j]);
       }
-      output += String.fromCharCode(c);
+      byteArray[i] = byte;
     }
+    
+    // Decode UTF-8 bytes to text
+    var decoder = new TextDecoder();
+    var output = decoder.decode(byteArray);
     
     // Calculate capacity utilization
     var utilizationPercent = Math.round((messageLength / maxCapacity) * 100);
@@ -514,8 +520,8 @@ function decodeMessage() {
     document.getElementById('decode-capacity-available-bar').style.width = availablePercent + '%';
     document.getElementById('decode-capacity-available-text').textContent = 'Available: ' + availablePercent + '%';
     document.getElementById('decode-capacity-details').textContent = 
-      'Decoded ' + messageLength.toLocaleString() + ' characters of ' + maxCapacity.toLocaleString() + ' total capacity. ' + 
-      (maxCapacity - messageLength).toLocaleString() + ' characters unused.';
+      'Decoded ' + messageLength.toLocaleString() + ' bytes of ' + maxCapacity.toLocaleString() + ' total capacity. ' + 
+      (maxCapacity - messageLength).toLocaleString() + ' bytes unused.';
     
     document.querySelector('.decode-capacity-bar').style.display = 'block';
     document.getElementById('decoded-message-text').textContent = output;
