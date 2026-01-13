@@ -1,47 +1,236 @@
-$('button.encode, button.decode').click(function(event) {
-  event.preventDefault();
+// Security Configuration
+const MAX_MESSAGE_LENGTH = 10000000;      // 10MB text limit
+const MAX_IMAGE_DIMENSION = 10000;         // 10,000 x 10,000 px max
+const MAX_CAPACITY = 100000000;            // 100MB absolute max
+const MAX_FILE_SIZE = 52428800;            // 50MB file size limit
+const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const LENGTH_HEADER_BITS = 32;             // 32-bit header for message length
+
+// Validation Functions
+function validateFileType(file) {
+  if (!file) {
+    showError('No file selected. Please choose an image file.');
+    return false;
+  }
+  if (!ALLOWED_FILE_TYPES.includes(file.type)) {
+    showError('Invalid file type. Please select a PNG, JPEG, GIF, or WebP image.');
+    return false;
+  }
+  if (file.size > MAX_FILE_SIZE) {
+    showError('File too large! Maximum file size: ' + (MAX_FILE_SIZE / 1048576).toFixed(0) + 'MB. Your file: ' + (file.size / 1048576).toFixed(1) + 'MB.');
+    return false;
+  }
+  return true;
+}
+
+function validateImageDimensions(width, height) {
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)) {
+    showError('Invalid image dimensions.');
+    return false;
+  }
+  if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION) {
+    showError('Image too large. Maximum dimension: ' + MAX_IMAGE_DIMENSION.toLocaleString() + ' pixels.');
+    return false;
+  }
+  if (width <= 0 || height <= 0) {
+    showError('Invalid image dimensions.');
+    return false;
+  }
+  return true;
+}
+
+function validateMessageLength(length) {
+  if (!Number.isSafeInteger(length)) {
+    showError('Invalid message length.');
+    return false;
+  }
+  if (length > MAX_MESSAGE_LENGTH) {
+    showError('Message too long! Maximum length: ' + MAX_MESSAGE_LENGTH.toLocaleString() + ' characters.');
+    return false;
+  }
+  return true;
+}
+
+function validateCapacity(capacity) {
+  if (!Number.isSafeInteger(capacity)) {
+    showError('Image capacity calculation error.');
+    return false;
+  }
+  if (capacity > MAX_CAPACITY) {
+    showError('Image capacity exceeds safety limits.');
+    return false;
+  }
+  return true;
+}
+
+function showError(message, context) {
+  var errorElement;
+  if (context === 'decode') {
+    errorElement = document.querySelector(".error-decode");
+  } else {
+    errorElement = document.querySelector(".error");
+  }
+  
+  if (errorElement) {
+    errorElement.textContent = '⚠️ ' + message;
+    errorElement.style.display = 'block';
+  }
+  // Errors persist until next operation (no auto-hide)
+  // Users can manually scroll past or will be cleared on next encode/decode
+}
+
+// Event listeners setup
+document.addEventListener('DOMContentLoaded', function() {
+  // File input listeners
+  var encodeFileInput = document.querySelector('input[name=baseFile]');
+  if (encodeFileInput) {
+    encodeFileInput.addEventListener('change', previewEncodeImage);
+  }
+  
+  var decodeFileInput = document.querySelector('input[name=decodeFile]');
+  if (decodeFileInput) {
+    decodeFileInput.addEventListener('change', previewDecodeImage);
+  }
+  
+  // Button listeners
+  var encodeButton = document.querySelector('button.encode-btn');
+  if (encodeButton) {
+    encodeButton.addEventListener('click', function(event) {
+      event.preventDefault();
+      encodeMessage();
+    });
+  }
+  
+  var decodeButton = document.querySelector('button.decode-btn');
+  if (decodeButton) {
+    decodeButton.addEventListener('click', function(event) {
+      event.preventDefault();
+      decodeMessage();
+    });
+  }
 });
 
 function previewDecodeImage() {
   var file = document.querySelector('input[name=decodeFile]').files[0];
+  
+  if (!validateFileType(file)) {
+    return;
+  }
 
   previewImage(file, ".decode canvas", function() {
-    $(".decode").fadeIn();
+    document.querySelector(".decode").style.display = 'block';
   });
 }
 
 function previewEncodeImage() {
   var file = document.querySelector("input[name=baseFile]").files[0];
+  
+  if (!validateFileType(file)) {
+    return;
+  }
 
-  $(".images .nulled").hide();
-  $(".images .message").hide();
+  document.querySelector(".images .nulled").style.display = 'none';
+  document.querySelector(".images .message").style.display = 'none';
+  document.querySelector(".capacity-bar").style.display = 'none';
+  document.querySelector(".error").style.display = 'none';
 
   previewImage(file, ".original canvas", function() {
-    $(".images .original").fadeIn();
-    $(".images").fadeIn();
+    try {
+      var canvas = document.querySelector('.original canvas');
+      
+      // Validate dimensions
+      if (!validateImageDimensions(canvas.width, canvas.height)) {
+        return;
+      }
+      
+      // Calculate and validate capacity (subtract header overhead)
+      var totalBits = canvas.width * canvas.height * 3;
+      var availableBits = totalBits - LENGTH_HEADER_BITS;
+      var capacity = Math.floor(availableBits / 8);
+      
+      if (!validateCapacity(capacity)) {
+        return;
+      }
+      
+      document.querySelector(".images .original").style.display = 'block';
+      document.querySelector(".images").style.display = 'block';
+      document.getElementById('encode-capacity-value').textContent = capacity.toLocaleString();
+      document.getElementById('encode-capacity').style.display = 'block';
+      
+      // Update modal with current image data
+      updateModalWithImageData(canvas.width, canvas.height, capacity);
+    } catch (error) {
+      showError('Error processing image: ' + error.message);
+    }
   });
 }
 
+function updateModalWithImageData(width, height, capacity) {
+  var totalPixels = width * height;
+  var totalBitsInImage = totalPixels * 3 * 8;  // Total bits (all 8 bits per channel)
+  var lsbBits = totalPixels * 3;  // LSB bits (1 bit per channel)
+  
+  // Update image info using safe DOM creation
+  var modalImageInfo = document.getElementById('modalImageInfo');
+  modalImageInfo.textContent = ''; // Clear existing content
+  
+  var createLine = function(text) {
+    var line = document.createElement('div');
+    line.textContent = text;
+    return line;
+  };
+  
+  var createCodeLine = function(label, value, suffix) {
+    var line = document.createElement('div');
+    line.textContent = label;
+    var code = document.createElement('code');
+    code.textContent = value;
+    line.appendChild(code);
+    if (suffix) {
+      line.appendChild(document.createTextNode(' ' + suffix));
+    }
+    return line;
+  };
+  
+  var strong = document.createElement('strong');
+  strong.textContent = 'Your Image:';
+  modalImageInfo.appendChild(strong);
+  modalImageInfo.appendChild(document.createElement('br'));
+  modalImageInfo.appendChild(createCodeLine('Size: ', width + ' × ' + height, 'pixels'));
+  modalImageInfo.appendChild(createCodeLine('Total pixels: ', totalPixels.toLocaleString(), ''));
+  modalImageInfo.appendChild(createCodeLine('Total bits: ', totalBitsInImage.toLocaleString(), '(all image data)'));
+  modalImageInfo.appendChild(createCodeLine('LSB bits: ', lsbBits.toLocaleString(), '(available for hiding)'));
+  modalImageInfo.appendChild(createCodeLine('Capacity: ', capacity.toLocaleString(), 'characters/bytes'));
+  
+  // Update calculation steps using safe DOM creation
+  var modalCalcSteps = document.getElementById('modalCalcSteps');
+  modalCalcSteps.textContent = ''; // Clear existing content
+  
+  var strongCalc = document.createElement('strong');
+  strongCalc.textContent = 'Step-by-step:';
+  modalCalcSteps.appendChild(strongCalc);
+  modalCalcSteps.appendChild(document.createElement('br'));
+  modalCalcSteps.appendChild(createCodeLine('1. ', width.toLocaleString() + ' × ' + height.toLocaleString() + ' = ' + totalPixels.toLocaleString(), 'pixels'));
+  modalCalcSteps.appendChild(createCodeLine('2. ', totalPixels.toLocaleString() + ' × 3 = ' + lsbBits.toLocaleString(), 'LSB bits (3 channels)'));
+  modalCalcSteps.appendChild(createCodeLine('3. ', lsbBits.toLocaleString() + ' ÷ 8 = ' + capacity.toLocaleString(), 'characters'));
+}
+
 function previewImage(file, canvasSelector, callback) {
-  var reader = new FileReader();
-  var image = new Image;
-  var $canvas = $(canvasSelector);
-  var context = $canvas[0].getContext('2d');
+  var image = new Image();
+  var canvas = document.querySelector(canvasSelector);
+  var context = canvas.getContext('2d');
 
   if (file) {
-    reader.readAsDataURL(file);
-  }
-
-  reader.onloadend = function () {
     image.src = URL.createObjectURL(file);
 
     image.onload = function() {
-      $canvas.prop({
-        'width': image.width,
-        'height': image.height
-      });
+      canvas.width = image.width;
+      canvas.height = image.height;
 
       context.drawImage(image, 0, 0);
+
+      // Clean up object URL to prevent memory leak
+      URL.revokeObjectURL(image.src);
 
       callback();
     }
@@ -49,73 +238,119 @@ function previewImage(file, canvasSelector, callback) {
 }
 
 function encodeMessage() {
-  $(".error").hide();
-  $(".binary").hide();
-
-  var text = $("textarea.message").val();
-
-  var $originalCanvas = $('.original canvas');
-  var $nulledCanvas = $('.nulled canvas');
-  var $messageCanvas = $('.message canvas');
-
-  var originalContext = $originalCanvas[0].getContext("2d");
-  var nulledContext = $nulledCanvas[0].getContext("2d");
-  var messageContext = $messageCanvas[0].getContext("2d");
-
-  var width = $originalCanvas[0].width;
-  var height = $originalCanvas[0].height;
-
-  // Check if the image is big enough to hide the message
-  if ((text.length * 8) > (width * height * 3)) {
-    $(".error")
-      .text("Text too long for chosen image....")
-      .fadeIn();
-
-    return;
+  var encodeButton = document.querySelector('button.encode-btn');
+  
+  // Rate limiting - disable button during processing
+  if (encodeButton) {
+    encodeButton.disabled = true;
   }
+  
+  document.querySelector(".error").style.display = 'none';
+  document.querySelector(".binary").style.display = 'none';
+  document.querySelector(".capacity-bar").style.display = 'none';
 
-  $nulledCanvas.prop({
-    'width': width,
-    'height': height
-  });
+  try {
+    var text = document.querySelector("textarea.message").value;
+    
+    // Validate message is not empty
+    if (!text || text.length === 0) {
+      showError('Please enter a message to encode.');
+      return;
+    }
+    
+    // Validate message length
+    if (!validateMessageLength(text.length)) {
+      return;
+    }
 
-  $messageCanvas.prop({
-    'width': width,
-    'height': height
-  });
+    var originalCanvas = document.querySelector('.original canvas');
+    var nulledCanvas = document.querySelector('.nulled canvas');
+    var messageCanvas = document.querySelector('.message canvas');
 
-  // Normalize the original image and draw it
-  var original = originalContext.getImageData(0, 0, width, height);
-  var pixel = original.data;
-  for (var i = 0, n = pixel.length; i < n; i += 4) {
-    for (var offset =0; offset < 3; offset ++) {
-      if(pixel[i + offset] %2 != 0) {
-        pixel[i + offset]--;
+    if (!originalCanvas || !nulledCanvas || !messageCanvas) {
+      showError('Please upload an image first.');
+      return;
+    }
+
+    var originalContext = originalCanvas.getContext("2d", { willReadFrequently: true });
+    var nulledContext = nulledCanvas.getContext("2d", { willReadFrequently: true });
+    var messageContext = messageCanvas.getContext("2d", { willReadFrequently: true });
+
+    var width = originalCanvas.width;
+    var height = originalCanvas.height;
+    
+    // Validate dimensions
+    if (!validateImageDimensions(width, height)) {
+      return;
+    }
+    
+    // Calculate capacity (accounting for 32-bit header)
+    var totalBits = width * height * 3;
+    var availableBits = totalBits - LENGTH_HEADER_BITS;
+    var maxCapacity = Math.floor(availableBits / 8);
+    
+    if (!validateCapacity(maxCapacity)) {
+      return;
+    }
+
+    // Check if the image is big enough to hide the message
+    var requiredBits = LENGTH_HEADER_BITS + (text.length * 8);
+    if (requiredBits > totalBits) {
+      showError('Message too long! Your message is ' + text.length.toLocaleString() + 
+                ' characters but this image can only hide ' + maxCapacity.toLocaleString() + 
+                ' characters. Please use a larger image or shorter message.');
+      return;
+    }
+
+    nulledCanvas.width = width;
+    nulledCanvas.height = height;
+
+    messageCanvas.width = width;
+    messageCanvas.height = height;
+
+    // Normalize the original image and draw it
+    var original = originalContext.getImageData(0, 0, width, height);
+    var pixel = original.data;
+    for (var i = 0, n = pixel.length; i < n; i += 4) {
+      for (var offset = 0; offset < 3; offset++) {
+        if(pixel[i + offset] % 2 != 0) {
+          pixel[i + offset]--;
+        }
       }
     }
-  }
-  nulledContext.putImageData(original, 0, 0);
+    nulledContext.putImageData(original, 0, 0);
 
-  // Convert the message to a binary string
-  var binaryMessage = "";
-  for (i = 0; i < text.length; i++) {
-    var binaryChar = text[i].charCodeAt(0).toString(2);
-
-    // Pad with 0 until the binaryChar has a lenght of 8 (1 Byte)
-    while(binaryChar.length < 8) {
-      binaryChar = "0" + binaryChar;
+    // Create 32-bit header with message length
+    var lengthBinary = text.length.toString(2);
+    while(lengthBinary.length < LENGTH_HEADER_BITS) {
+      lengthBinary = "0" + lengthBinary;
     }
 
-    binaryMessage += binaryChar;
-  }
-  $('.binary textarea').text(binaryMessage);
+    // Convert the message to a binary string using array for better performance
+    var messageBinaryArray = [];
+    for (var i = 0; i < text.length; i++) {
+      var binaryChar = text[i].charCodeAt(0).toString(2);
+
+      // Pad with 0 until the binaryChar has a length of 8 (1 Byte)
+      while(binaryChar.length < 8) {
+        binaryChar = "0" + binaryChar;
+      }
+
+      messageBinaryArray.push(binaryChar);
+    }
+    var messageBinary = messageBinaryArray.join('');
+    
+    // Prepend length header to message
+    var binaryMessage = lengthBinary + messageBinary;
+    
+    document.querySelector('.binary textarea').textContent = binaryMessage;
 
   // Apply the binary string to the image and draw it
   var message = nulledContext.getImageData(0, 0, width, height);
   pixel = message.data;
-  counter = 0;
+  var counter = 0;
   for (var i = 0, n = pixel.length; i < n; i += 4) {
-    for (var offset =0; offset < 3; offset ++) {
+    for (var offset = 0; offset < 3; offset++) {
       if (counter < binaryMessage.length) {
         pixel[i + offset] += parseInt(binaryMessage[counter]);
         counter++;
@@ -125,42 +360,174 @@ function encodeMessage() {
       }
     }
   }
-  messageContext.putImageData(message, 0, 0);
+    messageContext.putImageData(message, 0, 0);
 
-  $(".binary").fadeIn();
-  $(".images .nulled").fadeIn();
-  $(".images .message").fadeIn();
-};
+    // Display capacity utilization
+    var utilizationPercent = Math.round((text.length / maxCapacity) * 100);
+    var progressBar = document.getElementById('capacity-progress');
+    var capacityText = document.getElementById('capacity-text');
+    var capacityDetails = document.getElementById('capacity-details');
+    
+    // Set progress bar color based on utilization
+    progressBar.className = 'progress-bar';
+    if (utilizationPercent < 30) {
+      progressBar.classList.add('bg-success');
+    } else if (utilizationPercent < 70) {
+      progressBar.classList.add('bg-warning');
+    } else {
+      progressBar.classList.add('bg-danger');
+    }
+    
+    progressBar.style.width = utilizationPercent + '%';
+    progressBar.setAttribute('aria-valuenow', utilizationPercent);
+    capacityText.textContent = utilizationPercent + '%';
+    capacityDetails.textContent = 'Hidden ' + text.length.toLocaleString() + ' characters of ' + maxCapacity.toLocaleString() + ' available. ' + (maxCapacity - text.length).toLocaleString() + ' characters remaining.';
+    
+    document.querySelector(".capacity-bar").style.display = 'block';
+    document.querySelector(".binary").style.display = 'block';
+    document.querySelector(".images .nulled").style.display = 'block';
+    document.querySelector(".images .message").style.display = 'block';
+    
+  } catch (error) {
+    showError('Error encoding message: ' + error.message);
+    console.error('Encoding error:', error);
+  } finally {
+    // Re-enable button
+    if (encodeButton) {
+      encodeButton.disabled = false;
+    }
+  }
+}
 
 function decodeMessage() {
-  var $originalCanvas = $('.decode canvas');
-  var originalContext = $originalCanvas[0].getContext("2d");
-
-  var original = originalContext.getImageData(0, 0, $originalCanvas.width(), $originalCanvas.height());
-  var binaryMessage = "";
-  var pixel = original.data;
-  for (var i = 0, n = pixel.length; i < n; i += 4) {
-    for (var offset =0; offset < 3; offset ++) {
-      var value = 0;
-      if(pixel[i + offset] %2 != 0) {
-        value = 1;
+  var decodeButton = document.querySelector('button.decode-btn');
+  
+  // Rate limiting - disable button during processing
+  if (decodeButton) {
+    decodeButton.disabled = true;
+  }
+  
+  var errorDecode = document.querySelector(".error-decode");
+  if (errorDecode) {
+    errorDecode.style.display = 'none';
+  }
+  
+  try {
+    var originalCanvas = document.querySelector('.decode canvas');
+    
+    if (!originalCanvas) {
+      showError('Please upload an image first.', 'decode');
+      return;
+    }
+    
+    var width = originalCanvas.width;
+    var height = originalCanvas.height;
+    
+    // Validate dimensions
+    if (!validateImageDimensions(width, height)) {
+      return;
+    }
+    
+    var originalContext = originalCanvas.getContext("2d", { willReadFrequently: true });
+    var original = originalContext.getImageData(0, 0, width, height);
+    
+    // Calculate maximum capacity
+    var totalBits = width * height * 3;
+    var maxCapacity = Math.floor((totalBits - LENGTH_HEADER_BITS) / 8);
+    
+    if (!validateCapacity(maxCapacity)) {
+      return;
+    }
+    
+    // Extract all LSBs
+    var binaryData = "";
+    var pixel = original.data;
+    for (var i = 0, n = pixel.length; i < n; i += 4) {
+      for (var offset = 0; offset < 3; offset++) {
+        var value = 0;
+        if(pixel[i + offset] % 2 != 0) {
+          value = 1;
+        }
+        binaryData += value;
       }
-
-      binaryMessage += value;
+    }
+    
+    // Check if we have enough data for header
+    if (binaryData.length < LENGTH_HEADER_BITS) {
+      showError('Image too small or does not contain a hidden message.', 'decode');
+      return;
+    }
+    
+    // Read 32-bit length header
+    var lengthBinary = binaryData.substring(0, LENGTH_HEADER_BITS);
+    var messageLength = parseInt(lengthBinary, 2);
+    
+    // Validate message length from header
+    if (!Number.isSafeInteger(messageLength) || messageLength < 0) {
+      showError('Invalid or corrupted steganographic image.', 'decode');
+      return;
+    }
+    
+    // Handle zero-length message
+    if (messageLength === 0) {
+      showError('Image contains an empty message (0 characters).', 'decode');
+      return;
+    }
+    
+    if (!validateMessageLength(messageLength)) {
+      return;
+    }
+    
+    if (messageLength > maxCapacity) {
+      showError('Corrupted image: Declared message length (' + messageLength.toLocaleString() + 
+                ') exceeds image capacity (' + maxCapacity.toLocaleString() + ').', 'decode');
+      return;
+    }
+    
+    // Extract message binary (skip header)
+    var messageBinary = binaryData.substring(LENGTH_HEADER_BITS, LENGTH_HEADER_BITS + (messageLength * 8));
+    
+    // Check if we have enough data
+    if (messageBinary.length < messageLength * 8) {
+      showError('Incomplete message data in image.', 'decode');
+      return;
+    }
+    
+    // Convert binary to text
+    var output = "";
+    for (var i = 0; i < messageBinary.length; i += 8) {
+      var c = 0;
+      for (var j = 0; j < 8; j++) {
+        c <<= 1;
+        c |= parseInt(messageBinary[i + j]);
+      }
+      output += String.fromCharCode(c);
+    }
+    
+    // Calculate capacity utilization
+    var utilizationPercent = Math.round((messageLength / maxCapacity) * 100);
+    var availablePercent = 100 - utilizationPercent;
+    
+    // Update capacity visualization (stacked bar)
+    document.getElementById('decode-capacity-used-bar').style.width = utilizationPercent + '%';
+    document.getElementById('decode-capacity-used-text').textContent = 'Used: ' + utilizationPercent + '%';
+    document.getElementById('decode-capacity-available-bar').style.width = availablePercent + '%';
+    document.getElementById('decode-capacity-available-text').textContent = 'Available: ' + availablePercent + '%';
+    document.getElementById('decode-capacity-details').textContent = 
+      'Decoded ' + messageLength.toLocaleString() + ' characters of ' + maxCapacity.toLocaleString() + ' total capacity. ' + 
+      (maxCapacity - messageLength).toLocaleString() + ' characters unused.';
+    
+    document.querySelector('.decode-capacity-bar').style.display = 'block';
+    document.getElementById('decoded-message-text').textContent = output;
+    document.querySelector('.binary-decode').style.display = 'block';
+    
+  } catch (error) {
+    showError('Error decoding message: ' + error.message, 'decode');
+    console.error('Decoding error:', error);
+  } finally {
+    // Re-enable button
+    if (decodeButton) {
+      decodeButton.disabled = false;
     }
   }
-
-  var output = "";
-  for (var i = 0; i < binaryMessage.length; i += 8) {
-    var c = 0;
-    for (var j = 0; j < 8; j++) {
-      c <<= 1;
-      c |= parseInt(binaryMessage[i + j]);
-    }
-
-    output += String.fromCharCode(c);
-  }
-
-  $('.binary-decode textarea').text(output);
-  $('.binary-decode').fadeIn();
-};
+}
