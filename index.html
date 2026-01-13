@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,12 +7,18 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
 </head>
 <body>
-  <div class="container">
+  <div class="container-lg">
     <header class="my-4">
-      <h1>Steganography Online</h1>
+      <div class="d-flex justify-content-between align-items-center">
+        <h1 class="mb-0">Steganography Online</h1>
+        <button id="theme-toggle" class="btn btn-outline-secondary" type="button" aria-label="Toggle theme">
+          <span class="theme-icon-light">🌙</span>
+          <span class="theme-icon-dark d-none">☀️</span>
+        </button>
+      </div>
     </header>
 
-    <ul class="nav nav-tabs" id="tabs" role="tablist">
+    <ul class="nav nav-pills mb-3" id="tabs" role="tablist">
       <li class="nav-item" role="presentation">
         <a class="nav-link active" href="#encode" data-bs-toggle="tab" role="tab" aria-controls="encode" aria-selected="true">Encode</a>
       </li>
@@ -23,14 +29,20 @@
 
     <div id="my-tab-content" class="tab-content mt-3">
       <div class="tab-pane fade show active" id="encode" role="tabpanel" aria-labelledby="encode-tab">
-        <div>
-          <h2>Encode message</h2>
-          <p class="alert alert-info">
-            To encode a message into an image, choose the image you want to use, enter your text and hit the <strong>Encode</strong> button. <br/>
-            Save the last image, it will contain your hidden message. <br/>
-            Remember, the more text you want to hide, the larger the image has to be. In case you chose an image that is too small to hold your message you will be informed.<br/><br/>
-            Neither the image nor the message you hide will be at any moment transmitted over the web, all the magic happens within your browser.
-          </p>
+        <div class="card mb-4">
+          <div class="card-body">
+            <h2 class="card-title">Encode message</h2>
+            <p class="alert alert-info mb-0">
+              To encode a message into an image, choose the image you want to use, enter your text and hit the <strong>Encode</strong> button. 
+              Save the last image<span class="d-none d-sm-inline">, it will contain your hidden message</span>.<br/>
+              <span class="d-none d-md-inline">Remember, the more text you want to hide, the larger the image has to be. In case you chose an image that is too small to hold your message you will be informed.<br/></span>
+              <small class="d-block mt-2">Neither the image nor the message you hide will be transmitted over the web, all the magic happens within your browser.</small>
+            </p>
+          </div>
+        </div>
+        
+        <div class="card mb-4">
+          <div class="card-body">
           <form class="form">
             <div class="mb-3">
               <input class="form-control" type="file" name="baseFile">
@@ -46,10 +58,12 @@
             </div>
 
             <div class="mb-3">
-              <button type="button" class="encode-btn btn btn-primary float-end">Encode</button>
+              <div class="d-flex justify-content-end">
+                <button type="button" class="encode-btn btn btn-primary">Encode</button>
+              </div>
             </div>
           </form>
-          <div class="clearfix"></div>
+          </div>
         </div>
 
         <div class="error alert alert-danger" role="alert" style="display: none;"></div>
@@ -65,42 +79,77 @@
           </div>
         </div>
         <div class="binary" style="display: none;">
-          <h3>Binary representation of your message</h3>
-          <textarea class="form-control message" style="word-wrap:break-word;">
-          </textarea>
+          <div class="card mb-4">
+            <div class="card-header">
+              <h5 class="mb-0">Binary Representation</h5>
+            </div>
+            <div class="card-body bg-body-secondary p-3" style="max-height: 200px; overflow-y: auto; word-wrap: break-word; word-break: break-all; font-family: 'Courier New', monospace; font-size: 0.75rem;">
+            </div>
+          </div>
         </div>
         <div class="images" style="display: none;">
-          <div class="original" style="display: none;">
-            <h3>Original</h3>
-            <canvas></canvas>
-          </div>
-          <div class="nulled" style="display: none;">
-            <h3>Normalized</h3>
-            <canvas></canvas>
-          </div>
-          <div class="message" style="display: none;">
-            <h3>Message hidden in image (right click → save as)</h3>
-            <canvas></canvas>
+          <div class="row g-3">
+            <div class="col-md-4 original" style="display: none;">
+              <div class="card">
+                <div class="card-header">
+                  <h5 class="mb-0">Original</h5>
+                </div>
+                <div class="card-body p-2">
+                  <canvas class="w-100"></canvas>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-4 nulled" style="display: none;">
+              <div class="card">
+                <div class="card-header">
+                  <h5 class="mb-0">Normalized</h5>
+                </div>
+                <div class="card-body p-2">
+                  <canvas class="w-100"></canvas>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-4 message" style="display: none;">
+              <div class="card">
+                <div class="card-header">
+                  <h5 class="mb-0">Message hidden in image</h5>
+                </div>
+                <div class="card-body p-2">
+                  <canvas class="w-100"></canvas>
+                  <div class="text-center mt-2">
+                    <small class="text-muted">Right-click → Save as</small>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
       <div class="tab-pane fade" id="decode" role="tabpanel" aria-labelledby="decode-tab">
-        <div>
-          <h2>Decode image</h2>
-          <p class="alert alert-info">
-            To decode a hidden message from an image, just choose an image and hit the <strong>Decode</strong> button.<br/><br/>
-            Neither the image nor the message that has been hidden will be at any moment transmitted over the web, all the magic happens within your browser.
-          </p>
+        <div class="card mb-4">
+          <div class="card-body">
+            <h2 class="card-title">Decode image</h2>
+            <p class="alert alert-info mb-0">
+              To decode a hidden message from an image, just choose an image and hit the <strong>Decode</strong> button.
+              <small class="d-block mt-2">Neither the image nor the message that has been hidden will be transmitted over the web, all the magic happens within your browser.</small>
+            </p>
+          </div>
+        </div>
+        
+        <div class="card mb-4">
+          <div class="card-body">
           <form class="form">
             <div class="mb-3">
               <input class="form-control" type="file" name="decodeFile">
             </div>
             <div class="mb-3">
-              <button type="button" class="decode-btn btn btn-primary float-end">Decode</button>
+              <div class="d-flex justify-content-end">
+                <button type="button" class="decode-btn btn btn-primary">Decode</button>
+              </div>
             </div>
           </form>
-          <div class="clearfix"></div>
+          </div>
         </div>
         <div class="error-decode alert alert-danger" role="alert" style="display: none;"></div>
         <div class="decode-capacity-bar" style="display: none;">
@@ -122,7 +171,7 @@
             <div class="card-header">
               <h5 class="mb-0">Decoded Message</h5>
             </div>
-            <div class="card-body" id="decoded-message-text" style="max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-family: monospace; background-color: #f8f9fa;">
+            <div class="card-body bg-body-secondary" id="decoded-message-text" style="max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-family: monospace;">
             </div>
           </div>
         </div>
@@ -134,8 +183,8 @@
 
     </div>
 
-    <footer style="text-align: center; margin-top: 20px; margin-bottom: 10px;">
-      &copy; 2014 by <a href="mailto:stylesuxx@gmail.com">stylesuxx</a>
+    <footer class="text-center mt-5 mb-3 text-muted">
+      <small>&copy; 2014 by <a href="mailto:stylesuxx@gmail.com">stylesuxx</a></small>
     </footer>
   </div>
 
@@ -221,31 +270,103 @@
   </div>
 
   <style>
+    /* CSS Variables for theming */
+    :root {
+      --canvas-bg: #f8f9fa;
+      --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.1);
+      --shadow-hover: 0 4px 8px rgba(0, 0, 0, 0.15);
+    }
+
+    [data-bs-theme="dark"] {
+      --canvas-bg: #212529;
+      --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.3);
+      --shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+
+    /* Canvas styling with theme support */
     canvas {
       max-width: 100%;
+      background-color: var(--canvas-bg);
+      border-radius: 0.375rem;
     }
+
+    /* Capacity badge styling */
     #encode-capacity .badge {
       font-size: 0.9rem;
       padding: 0.4rem 0.7rem;
     }
+
     .capacity-badge {
       cursor: pointer;
       transition: transform 0.2s, box-shadow 0.2s;
     }
+
     .capacity-badge:hover {
       transform: scale(1.05);
-      box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+      box-shadow: var(--shadow-hover);
     }
+
+    /* Progress bars */
     .progress-bar {
       font-weight: bold;
       font-size: 0.95rem;
       transition: width 0.6s ease;
     }
+
     .capacity-bar .alert {
       margin-top: 1rem;
     }
+
+    /* Card enhancements */
+    .card {
+      box-shadow: var(--shadow-sm);
+      transition: box-shadow 0.2s;
+    }
+
+    /* Theme toggle button */
+    #theme-toggle {
+      min-width: 45px;
+    }
+
+    /* Binary display */
+    .binary .card-body {
+      line-height: 1.2;
+    }
   </style>
 
+  <script>
+    // Theme switcher
+    (function() {
+      const html = document.documentElement;
+      const themeToggle = document.getElementById('theme-toggle');
+      const lightIcon = document.querySelector('.theme-icon-light');
+      const darkIcon = document.querySelector('.theme-icon-dark');
+      
+      // Load saved theme or default to light
+      const savedTheme = localStorage.getItem('theme') || 'light';
+      html.setAttribute('data-bs-theme', savedTheme);
+      updateIcons(savedTheme);
+      
+      // Toggle theme on button click
+      themeToggle.addEventListener('click', function() {
+        const currentTheme = html.getAttribute('data-bs-theme');
+        const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+        html.setAttribute('data-bs-theme', newTheme);
+        localStorage.setItem('theme', newTheme);
+        updateIcons(newTheme);
+      });
+      
+      function updateIcons(theme) {
+        if (theme === 'dark') {
+          lightIcon.classList.add('d-none');
+          darkIcon.classList.remove('d-none');
+        } else {
+          lightIcon.classList.remove('d-none');
+          darkIcon.classList.add('d-none');
+        }
+      }
+    })();
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
   <script type="text/JavaScript" src="script.js?v=16"></script>
 </body>

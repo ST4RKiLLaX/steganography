@@ -345,7 +345,7 @@ function encodeMessage() {
     // Prepend length header to message
     var binaryMessage = lengthBinary + messageBinary;
     
-    document.querySelector('.binary textarea').textContent = binaryMessage;
+    document.querySelector('.binary .card-body').textContent = binaryMessage;
 
   // Apply the binary string to the image and draw it
   var message = nulledContext.getImageData(0, 0, width, height);
