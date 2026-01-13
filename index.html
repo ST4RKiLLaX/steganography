@@ -117,7 +117,9 @@
                 <div class="card-body p-2">
                   <canvas class="w-100"></canvas>
                   <div class="text-center mt-2">
-                    <small class="text-muted">Right-click → Save as</small>
+                    <button type="button" class="btn btn-sm btn-primary" id="downloadEncoded">
+                      <span>⬇️</span> Download Image
+                    </button>
                   </div>
                 </div>
               </div>
@@ -269,6 +271,52 @@
     </div>
   </div>
 
+  <!-- Image Comparison Modal -->
+  <div class="modal fade" id="comparisonModal" tabindex="-1" aria-labelledby="comparisonModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-fullscreen">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div class="d-flex align-items-center gap-3 flex-grow-1">
+            <h5 class="modal-title mb-0" id="comparisonModalLabel">Compare Images</h5>
+            <select id="comparison-type" class="form-select form-select-sm" style="max-width: 280px;">
+              <option value="original-encoded">Original vs Encoded</option>
+              <option value="original-normalized">Original vs Normalized</option>
+              <option value="normalized-encoded">Normalized vs Encoded</option>
+            </select>
+          </div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body d-flex flex-column align-items-center justify-content-center p-4">
+          <div class="comparison-container" id="comparisonContainer">
+            <canvas id="comparison-left" class="comparison-canvas"></canvas>
+            <canvas id="comparison-right" class="comparison-canvas comparison-right"></canvas>
+            <div class="comparison-slider" id="comparisonSlider">
+              <div class="slider-handle" id="sliderHandle" role="slider" 
+                   aria-label="Image comparison slider" 
+                   aria-valuemin="0" 
+                   aria-valuemax="100" 
+                   aria-valuenow="50"
+                   tabindex="0">
+              </div>
+            </div>
+            <div class="comparison-labels">
+              <span class="label-left" id="labelLeft">Original</span>
+              <span class="label-right" id="labelRight">Encoded</span>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer justify-content-center">
+          <button type="button" class="btn btn-primary" id="downloadLeft">
+            <span>⬇️</span> Download <span id="downloadLeftName">Original</span>
+          </button>
+          <button type="button" class="btn btn-primary" id="downloadRight">
+            <span>⬇️</span> Download <span id="downloadRightName">Encoded</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <style>
     /* CSS Variables for theming */
     :root {
@@ -332,6 +380,156 @@
     .binary .card-body {
       line-height: 1.2;
     }
+
+    /* Comparison Modal Styles */
+    .comparison-container {
+      position: relative;
+      max-width: 100%;
+      max-height: 80vh;
+      margin: 0 auto;
+      overflow: hidden;
+      cursor: ew-resize;
+    }
+
+    .comparison-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      max-width: 100%;
+      max-height: 80vh;
+      object-fit: contain;
+    }
+
+    #comparison-left {
+      position: relative;
+      z-index: 1;
+    }
+
+    #comparison-right {
+      z-index: 2;
+      clip-path: inset(0 0 0 50%);
+    }
+
+    .comparison-slider {
+      position: absolute;
+      left: 50%;
+      top: 0;
+      bottom: 0;
+      width: 3px;
+      background: linear-gradient(to bottom, 
+        var(--bs-primary), 
+        var(--bs-primary-rgb));
+      z-index: 3;
+      transform: translateX(-50%);
+      pointer-events: none;
+    }
+
+    .slider-handle {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 48px;
+      height: 48px;
+      background: var(--bs-primary);
+      border: 3px solid var(--bs-body-bg);
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      cursor: ew-resize;
+      pointer-events: all;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      transition: transform 0.2s, box-shadow 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .slider-handle:hover {
+      transform: translate(-50%, -50%) scale(1.1);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+
+    .slider-handle:active {
+      transform: translate(-50%, -50%) scale(0.95);
+    }
+
+    .slider-handle::before,
+    .slider-handle::after {
+      content: '';
+      position: absolute;
+      width: 2px;
+      height: 12px;
+      background: var(--bs-body-bg);
+    }
+
+    .slider-handle::before {
+      left: 16px;
+    }
+
+    .slider-handle::after {
+      right: 16px;
+    }
+
+    .comparison-labels {
+      position: absolute;
+      bottom: 20px;
+      left: 0;
+      right: 0;
+      display: flex;
+      justify-content: space-between;
+      padding: 0 30px;
+      z-index: 4;
+      pointer-events: none;
+    }
+
+    .comparison-labels span {
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      backdrop-filter: blur(4px);
+    }
+
+    [data-bs-theme="dark"] .comparison-labels span {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    /* Image cards clickable hint */
+    .images .card {
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .images .card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
+
+    /* Mobile optimizations */
+    @media (max-width: 767px) {
+      .slider-handle {
+        width: 60px;
+        height: 60px;
+      }
+      
+      .comparison-labels {
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        bottom: 10px;
+        padding: 0 10px;
+      }
+      
+      .modal-footer {
+        flex-direction: column;
+        gap: 10px;
+      }
+      
+      .modal-footer .btn {
+        width: 100%;
+      }
+    }
   </style>
 
   <script>
@@ -365,6 +563,248 @@
           darkIcon.classList.add('d-none');
         }
       }
+    })();
+
+    // Image Comparison Modal
+    (function() {
+      const modal = document.getElementById('comparisonModal');
+      let bsModal = null;
+      const comparisonType = document.getElementById('comparison-type');
+      const leftCanvas = document.getElementById('comparison-left');
+      const rightCanvas = document.getElementById('comparison-right');
+      const slider = document.getElementById('comparisonSlider');
+      const handle = document.getElementById('sliderHandle');
+      const container = document.getElementById('comparisonContainer');
+      const labelLeft = document.getElementById('labelLeft');
+      const labelRight = document.getElementById('labelRight');
+      const downloadLeft = document.getElementById('downloadLeft');
+      const downloadRight = document.getElementById('downloadRight');
+      const downloadLeftName = document.getElementById('downloadLeftName');
+      const downloadRightName = document.getElementById('downloadRightName');
+      
+      let isDragging = false;
+      let currentComparison = {left: null, right: null};
+      
+      // Canvas sources map
+      const canvasSources = {
+        'original': () => document.querySelector('.original canvas'),
+        'normalized': () => document.querySelector('.nulled canvas'),
+        'encoded': () => document.querySelector('.message canvas')
+      };
+      
+      const comparisonLabels = {
+        'original': 'Original',
+        'normalized': 'Normalized',
+        'encoded': 'Encoded'
+      };
+      
+      // Clone canvas to modal canvas
+      function cloneCanvas(source, target) {
+        if (!source || !target) return;
+        target.width = source.width;
+        target.height = source.height;
+        const ctx = target.getContext('2d');
+        ctx.drawImage(source, 0, 0);
+        
+        // Set container size based on canvas
+        const aspectRatio = source.height / source.width;
+        const containerWidth = Math.min(source.width, window.innerWidth * 0.9);
+        const containerHeight = containerWidth * aspectRatio;
+        container.style.width = containerWidth + 'px';
+        container.style.height = containerHeight + 'px';
+      }
+      
+      // Open comparison modal
+      function openComparison(leftType, rightType) {
+        const leftSource = canvasSources[leftType]();
+        const rightSource = canvasSources[rightType]();
+        
+        if (!leftSource || !rightSource) return;
+        
+        currentComparison = {left: leftType, right: rightType};
+        
+        // Clone canvases
+        cloneCanvas(leftSource, leftCanvas);
+        cloneCanvas(rightSource, rightCanvas);
+        
+        // Update UI
+        const comparisonValue = leftType + '-' + rightType;
+        comparisonType.value = comparisonValue;
+        labelLeft.textContent = comparisonLabels[leftType];
+        labelRight.textContent = comparisonLabels[rightType];
+        downloadLeftName.textContent = comparisonLabels[leftType];
+        downloadRightName.textContent = comparisonLabels[rightType];
+        
+        // Reset slider to 50%
+        updateSliderPosition(50);
+        
+        // Show modal (create instance if needed)
+        if (!bsModal) {
+          bsModal = new bootstrap.Modal(modal);
+        }
+        bsModal.show();
+      }
+      
+      // Update slider position
+      function updateSliderPosition(percentage) {
+        percentage = Math.max(0, Math.min(100, percentage));
+        slider.style.left = percentage + '%';
+        rightCanvas.style.clipPath = `inset(0 0 0 ${percentage}%)`;
+        handle.setAttribute('aria-valuenow', Math.round(percentage));
+      }
+      
+      // Slider drag handlers
+      function startDrag(e) {
+        isDragging = true;
+        e.preventDefault();
+      }
+      
+      function drag(e) {
+        if (!isDragging) return;
+        
+        const rect = container.getBoundingClientRect();
+        let clientX;
+        
+        if (e.type.includes('touch')) {
+          clientX = e.touches[0].clientX;
+        } else {
+          clientX = e.clientX;
+        }
+        
+        const x = clientX - rect.left;
+        const percentage = (x / rect.width) * 100;
+        updateSliderPosition(percentage);
+      }
+      
+      function stopDrag() {
+        isDragging = false;
+      }
+      
+      // Mouse events
+      handle.addEventListener('mousedown', startDrag);
+      document.addEventListener('mousemove', drag);
+      document.addEventListener('mouseup', stopDrag);
+      
+      // Touch events
+      handle.addEventListener('touchstart', startDrag, {passive: false});
+      document.addEventListener('touchmove', drag, {passive: false});
+      document.addEventListener('touchend', stopDrag);
+      
+      // Click to jump
+      container.addEventListener('click', function(e) {
+        if (e.target === handle || e.target.parentElement === handle) return;
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const percentage = (x / rect.width) * 100;
+        updateSliderPosition(percentage);
+      });
+      
+      // Keyboard navigation
+      handle.addEventListener('keydown', function(e) {
+        const current = parseFloat(slider.style.left) || 50;
+        let newValue = current;
+        
+        switch(e.key) {
+          case 'ArrowLeft':
+            newValue = current - 5;
+            e.preventDefault();
+            break;
+          case 'ArrowRight':
+            newValue = current + 5;
+            e.preventDefault();
+            break;
+          case 'Home':
+            newValue = 0;
+            e.preventDefault();
+            break;
+          case 'End':
+            newValue = 100;
+            e.preventDefault();
+            break;
+        }
+        
+        updateSliderPosition(newValue);
+      });
+      
+      // Comparison type change
+      comparisonType.addEventListener('change', function() {
+        const [left, right] = this.value.split('-');
+        openComparison(left, right);
+      });
+      
+      // Download functions
+      function downloadCanvas(canvas, filename) {
+        canvas.toBlob(function(blob) {
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          const timestamp = new Date().getTime();
+          link.download = `steganography-${filename}-${timestamp}.png`;
+          link.href = url;
+          link.click();
+          URL.revokeObjectURL(url);
+        }, 'image/png');
+      }
+      
+      downloadLeft.addEventListener('click', function() {
+        const sourceCanvas = canvasSources[currentComparison.left]();
+        if (sourceCanvas) {
+          downloadCanvas(sourceCanvas, currentComparison.left);
+        }
+      });
+      
+      downloadRight.addEventListener('click', function() {
+        const sourceCanvas = canvasSources[currentComparison.right]();
+        if (sourceCanvas) {
+          downloadCanvas(sourceCanvas, currentComparison.right);
+        }
+      });
+      
+      // Click handlers for image cards
+      document.addEventListener('DOMContentLoaded', function() {
+        const originalCard = document.querySelector('.original .card');
+        const nulledCard = document.querySelector('.nulled .card');
+        const messageCard = document.querySelector('.message .card');
+        const downloadEncodedBtn = document.getElementById('downloadEncoded');
+        
+        if (originalCard) {
+          originalCard.addEventListener('click', function() {
+            if (canvasSources['encoded']()) {
+              openComparison('original', 'encoded');
+            }
+          });
+        }
+        
+        if (nulledCard) {
+          nulledCard.addEventListener('click', function() {
+            if (canvasSources['normalized']()) {
+              openComparison('original', 'normalized');
+            }
+          });
+        }
+        
+        if (messageCard) {
+          messageCard.addEventListener('click', function(e) {
+            // Don't open modal if download button was clicked
+            if (e.target.closest('#downloadEncoded')) {
+              return;
+            }
+            if (canvasSources['encoded']()) {
+              openComparison('normalized', 'encoded');
+            }
+          });
+        }
+        
+        // Download encoded image button
+        if (downloadEncodedBtn) {
+          downloadEncodedBtn.addEventListener('click', function(e) {
+            e.stopPropagation(); // Prevent card click
+            const encodedCanvas = canvasSources['encoded']();
+            if (encodedCanvas) {
+              downloadCanvas(encodedCanvas, 'encoded');
+            }
+          });
+        }
+      });
     })();
   </script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
