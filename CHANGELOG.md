@@ -79,7 +79,7 @@
 
 **File Type Validation**
 - Original: No validation
-- New: Whitelist-based file type checking (PNG, JPEG, GIF, WebP only)
+- New: Whitelist-based file type checking (PNG, JPEG, WebP only)
 - Risk Addressed: Malicious file upload attempts
 
 **File Size Validation**

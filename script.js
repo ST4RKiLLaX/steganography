@@ -3,7 +3,7 @@ const MAX_MESSAGE_LENGTH = 10000000;      // 10MB byte limit (UTF-8 encoded)
 const MAX_IMAGE_DIMENSION = 10000;         // 10,000 x 10,000 px max
 const MAX_CAPACITY = 100000000;            // 100MB absolute max
 const MAX_FILE_SIZE = 52428800;            // 50MB file size limit
-const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 const LENGTH_HEADER_BITS = 32;             // 32-bit header for message length
 
 // Validation Functions
@@ -13,7 +13,7 @@ function validateFileType(file) {
     return false;
   }
   if (!ALLOWED_FILE_TYPES.includes(file.type)) {
-    showError('Invalid file type. Please select a PNG, JPEG, GIF, or WebP image.');
+    showError('Invalid file type. Please select a PNG, JPEG, or WebP image.');
     return false;
   }
   if (file.size > MAX_FILE_SIZE) {
