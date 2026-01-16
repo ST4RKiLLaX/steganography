@@ -142,12 +142,23 @@ function initComparisonModal() {
     var ctx = target.getContext('2d');
     ctx.drawImage(source, 0, 0);
     
-    // Set container size based on canvas
+    // Calculate display size to fit within viewport while maintaining aspect ratio
     var aspectRatio = source.height / source.width;
-    var containerWidth = Math.min(source.width, window.innerWidth * 0.9);
-    var containerHeight = containerWidth * aspectRatio;
-    comparisonModal.container.style.width = containerWidth + 'px';
-    comparisonModal.container.style.height = containerHeight + 'px';
+    var maxWidth = window.innerWidth * 0.9;
+    var maxHeight = window.innerHeight * 0.8;
+    
+    var displayWidth = Math.min(source.width, maxWidth);
+    var displayHeight = displayWidth * aspectRatio;
+    
+    // If height exceeds max, scale down based on height instead
+    if (displayHeight > maxHeight) {
+      displayHeight = maxHeight;
+      displayWidth = displayHeight / aspectRatio;
+    }
+    
+    // Set container to exact display size so slider matches image edges
+    comparisonModal.container.style.width = Math.round(displayWidth) + 'px';
+    comparisonModal.container.style.height = Math.round(displayHeight) + 'px';
   }
   
   // Open comparison modal
