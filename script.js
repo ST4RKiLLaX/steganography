@@ -4,7 +4,14 @@ const MAX_IMAGE_DIMENSION = 10000;         // 10,000 x 10,000 px max
 const MAX_CAPACITY = 100000000;            // 100MB absolute max
 const MAX_FILE_SIZE = 52428800;            // 50MB file size limit
 const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
-const LENGTH_HEADER_BITS = 32;             // 32-bit header for message length
+
+// v3 Format - Fixed Sentinel + Variable Message
+const FORMAT_VERSION = 3;                  // Current format version
+const SENTINEL_BITS = 56;                  // Fixed 1-LSB sentinel (magic + mode + reserved + length)
+const SENTINEL_PIXELS = 19;                // ceil(56 / 3) pixels needed for sentinel
+const MAGIC_V3 = '1010101001010101';       // 0xAA55 (16-bit magic number)
+const MIN_LSB_BITS = 1;                    // Minimum LSB mode
+const MAX_LSB_BITS = 4;                    // Maximum LSB mode
 
 // Validation Functions
 function validateFileType(file) {
@@ -328,6 +335,53 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
   
+  // Message textarea - real-time character counter and auto LSB selection
+  var messageTextarea = document.querySelector('textarea.message');
+  if (messageTextarea) {
+    messageTextarea.addEventListener('input', function() {
+      updateMessageAnalysis(this.value);
+    });
+  }
+  
+  // Manual override button handlers
+  var overrideBtn = document.getElementById('mode-override-btn');
+  var autoBtn = document.getElementById('mode-auto-btn');
+  var manualSelect = document.getElementById('manual-lsb-mode');
+  
+  if (overrideBtn) {
+    overrideBtn.addEventListener('click', function() {
+      document.getElementById('capacity-analysis').style.display = 'none';
+      document.getElementById('manual-mode-override').style.display = 'block';
+      // Trigger recalculation with manual mode
+      var text = document.querySelector('textarea.message').value;
+      if (text) {
+        updateMessageAnalysis(text);
+      }
+    });
+  }
+  
+  if (autoBtn) {
+    autoBtn.addEventListener('click', function() {
+      document.getElementById('manual-mode-override').style.display = 'none';
+      document.getElementById('capacity-analysis').style.display = 'block';
+      // Trigger recalculation with auto mode
+      var text = document.querySelector('textarea.message').value;
+      if (text) {
+        updateMessageAnalysis(text);
+      }
+    });
+  }
+  
+  if (manualSelect) {
+    manualSelect.addEventListener('change', function() {
+      // Recalculate with manual mode
+      var text = document.querySelector('textarea.message').value;
+      if (text) {
+        updateMessageAnalysis(text);
+      }
+    });
+  }
+  
   // Drag and Drop File Upload
   function setupDragAndDrop(dropZone, fileInput) {
     if (!dropZone || !fileInput) return;
@@ -369,11 +423,8 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     
     // Make drop zone clickable
-    dropZone.addEventListener('click', (e) => {
-      // Don't trigger if clicking the hidden input itself
-      if (e.target !== fileInput) {
-        fileInput.click();
-      }
+    dropZone.addEventListener('click', () => {
+      fileInput.click();
     });
   }
   
@@ -433,6 +484,25 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     });
   }
+  
+  // Manual LSB mode override for decode
+  var manualOverrideBtn = document.getElementById('manual-override-btn');
+  if (manualOverrideBtn) {
+    manualOverrideBtn.addEventListener('click', function() {
+      var autoDetected = document.getElementById('auto-detected');
+      var manualSelect = document.getElementById('manual-mode-select');
+      var detector = document.getElementById('decode-mode-detector');
+      
+      if (autoDetected && manualSelect) {
+        autoDetected.style.display = 'none';
+        manualSelect.style.display = 'block';
+        
+        // Pre-fill with detected value
+        var detectedMode = detector?.getAttribute('data-detected-mode') || '1';
+        document.getElementById('decode-lsb-mode').value = detectedMode;
+      }
+    });
+  }
 });
 
 function previewDecodeImage() {
@@ -444,7 +514,307 @@ function previewDecodeImage() {
 
   previewImage(file, ".decode canvas", function() {
     document.querySelector(".decode").style.display = 'block';
+    
+    // Detect LSB mode from uploaded image
+    detectLsbMode();
   });
+}
+
+// Auto LSB Mode Selection Functions
+function calculateOptimalLSBMode(messageBytes, imageWidth, imageHeight) {
+  var requiredBits = SENTINEL_BITS + (messageBytes * 8);
+  var availablePixels = (imageWidth * imageHeight) - SENTINEL_PIXELS;
+  
+  // Try each mode from 1→4 (prefer lowest for minimal footprint)
+  for (var lsbMode = 1; lsbMode <= MAX_LSB_BITS; lsbMode++) {
+    var capacity = availablePixels * 3 * lsbMode;
+    if (requiredBits <= capacity) {
+      var utilization = (requiredBits / capacity * 100);
+      return {
+        mode: lsbMode,
+        required: requiredBits,
+        available: capacity,
+        utilization: utilization.toFixed(1),
+        recommendation: getRecommendation(lsbMode, utilization)
+      };
+    }
+  }
+  
+  return null; // Message too large
+}
+
+function getRecommendation(lsbMode, utilization) {
+  if (utilization < 60) return 'Excellent';
+  if (utilization < 85) return 'Good';
+  if (utilization < 95) return 'Tight';
+  return 'Full';
+}
+
+function updateMessageAnalysis(text) {
+  var charCount = text.length;
+  var encoder = new TextEncoder();
+  var byteCount = encoder.encode(text).length;
+  
+  // Update counter badge
+  var counterBadge = document.getElementById('message-counter-badge');
+  if (counterBadge) {
+    counterBadge.textContent = '📝 ' + charCount.toLocaleString() + ' characters (' + byteCount.toLocaleString() + ' bytes)';
+  }
+  
+  // Get image dimensions
+  var canvas = document.querySelector('.original canvas');
+  if (!canvas || canvas.width === 0) {
+    document.getElementById('capacity-analysis').style.display = 'none';
+    // Hide capacity badge if no image
+    var capacityBadge = document.getElementById('capacity-badge');
+    if (capacityBadge) {
+      capacityBadge.style.display = 'none';
+    }
+    return;
+  }
+  
+  // Check if manual override is active
+  var manualOverride = document.getElementById('manual-mode-override');
+  var isManual = manualOverride && manualOverride.style.display !== 'none';
+  
+  if (isManual) {
+    // Use manual mode
+    var manualMode = parseInt(document.getElementById('manual-lsb-mode').value);
+    updateManualModeAnalysis(byteCount, canvas.width, canvas.height, manualMode);
+  } else {
+    // Calculate optimal mode
+    var analysis = calculateOptimalLSBMode(byteCount, canvas.width, canvas.height);
+    
+    if (!analysis) {
+      // Message too large
+      showCapacityError(byteCount, canvas.width, canvas.height);
+      return;
+    }
+    
+    // Update UI with analysis
+    updateCapacityAnalysisUI(analysis, byteCount);
+  }
+}
+
+function updateCapacityAnalysisUI(analysis, messageBytes) {
+  var capacityAnalysis = document.getElementById('capacity-analysis');
+  var usageBar = document.getElementById('usage-bar');
+  var capacityStats = document.getElementById('capacity-stats');
+  var autoModeBadge = document.getElementById('auto-mode-badge');
+  var capacityBadge = document.getElementById('capacity-badge');
+  
+  if (!capacityAnalysis || !usageBar || !capacityStats || !autoModeBadge) return;
+  
+  capacityAnalysis.style.display = 'block';
+  
+  // Update progress bar
+  var utilization = parseFloat(analysis.utilization);
+  usageBar.style.width = utilization + '%';
+  usageBar.setAttribute('aria-valuenow', utilization);
+  
+  // Set color based on utilization
+  usageBar.className = 'progress-bar';
+  var badgeColor = 'bg-success';
+  if (utilization < 60) {
+    usageBar.classList.add('bg-success');
+    badgeColor = 'bg-success';
+  } else if (utilization < 85) {
+    usageBar.classList.add('bg-warning');
+    badgeColor = 'bg-warning';
+  } else if (utilization < 95) {
+    usageBar.classList.add('bg-orange');
+    badgeColor = 'bg-warning';
+  } else {
+    usageBar.classList.add('bg-danger');
+    badgeColor = 'bg-danger';
+  }
+  
+  // Update stats text
+  var capacityBytes = Math.floor(analysis.available / 8);
+  capacityStats.textContent = messageBytes.toLocaleString() + ' / ' + 
+                              capacityBytes.toLocaleString() + ' bytes (' + 
+                              analysis.utilization + '% - ' + analysis.recommendation + ')';
+  
+  // Update auto mode badge
+  autoModeBadge.textContent = 'Auto: ' + analysis.mode + '-LSB';
+  autoModeBadge.className = 'badge';
+  if (analysis.mode === 1) {
+    autoModeBadge.classList.add('bg-primary');
+  } else if (analysis.mode === 2) {
+    autoModeBadge.classList.add('bg-info');
+  } else if (analysis.mode === 3) {
+    autoModeBadge.classList.add('bg-warning');
+  } else {
+    autoModeBadge.classList.add('bg-danger');
+  }
+  
+  // Store selected mode for encoding
+  autoModeBadge.setAttribute('data-auto-mode', analysis.mode);
+  
+  // Update capacity badge
+  if (capacityBadge) {
+    capacityBadge.style.display = 'inline-block';
+    capacityBadge.textContent = '💾 ' + messageBytes.toLocaleString() + ' / ' + 
+                                capacityBytes.toLocaleString() + ' bytes (' + analysis.mode + '-LSB)';
+    capacityBadge.className = 'badge ' + badgeColor;
+    capacityBadge.setAttribute('role', 'button');
+    capacityBadge.setAttribute('data-bs-toggle', 'modal');
+    capacityBadge.setAttribute('data-bs-target', '#lsbModal');
+    capacityBadge.setAttribute('title', 'Click to learn how this works');
+  }
+}
+
+function updateManualModeAnalysis(messageBytes, imageWidth, imageHeight, manualMode) {
+  var requiredBits = SENTINEL_BITS + (messageBytes * 8);
+  var availablePixels = (imageWidth * imageHeight) - SENTINEL_PIXELS;
+  var capacity = availablePixels * 3 * manualMode;
+  
+  var capacityAnalysis = document.getElementById('capacity-analysis');
+  var usageBar = document.getElementById('usage-bar');
+  var capacityStats = document.getElementById('capacity-stats');
+  var autoModeBadge = document.getElementById('auto-mode-badge');
+  var capacityBadge = document.getElementById('capacity-badge');
+  
+  if (!capacityAnalysis || !usageBar || !capacityStats || !autoModeBadge) return;
+  
+  if (requiredBits > capacity) {
+    // Message too large for manual mode
+    showCapacityError(messageBytes, imageWidth, imageHeight);
+    return;
+  }
+  
+  capacityAnalysis.style.display = 'block';
+  
+  var utilization = (requiredBits / capacity * 100);
+  usageBar.style.width = utilization.toFixed(1) + '%';
+  usageBar.setAttribute('aria-valuenow', utilization.toFixed(1));
+  
+  // Set color
+  usageBar.className = 'progress-bar';
+  var badgeColor = 'bg-success';
+  if (utilization < 60) {
+    usageBar.classList.add('bg-success');
+    badgeColor = 'bg-success';
+  } else if (utilization < 85) {
+    usageBar.classList.add('bg-warning');
+    badgeColor = 'bg-warning';
+  } else if (utilization < 95) {
+    usageBar.classList.add('bg-orange');
+    badgeColor = 'bg-warning';
+  } else {
+    usageBar.classList.add('bg-danger');
+    badgeColor = 'bg-danger';
+  }
+  
+  var capacityBytes = Math.floor(capacity / 8);
+  var recommendation = getRecommendation(manualMode, utilization);
+  capacityStats.textContent = messageBytes.toLocaleString() + ' / ' + 
+                              capacityBytes.toLocaleString() + ' bytes (' + 
+                              utilization.toFixed(1) + '% - ' + recommendation + ')';
+  
+  autoModeBadge.textContent = 'Manual: ' + manualMode + '-LSB';
+  autoModeBadge.className = 'badge bg-secondary';
+  autoModeBadge.setAttribute('data-auto-mode', manualMode);
+  
+  // Update capacity badge
+  if (capacityBadge) {
+    capacityBadge.style.display = 'inline-block';
+    capacityBadge.textContent = '💾 ' + messageBytes.toLocaleString() + ' / ' + 
+                                capacityBytes.toLocaleString() + ' bytes (' + manualMode + '-LSB)';
+    capacityBadge.className = 'badge ' + badgeColor;
+    capacityBadge.setAttribute('role', 'button');
+    capacityBadge.setAttribute('data-bs-toggle', 'modal');
+    capacityBadge.setAttribute('data-bs-target', '#lsbModal');
+    capacityBadge.setAttribute('title', 'Click to learn how this works');
+  }
+}
+
+function showCapacityError(messageBytes, imageWidth, imageHeight) {
+  var capacityAnalysis = document.getElementById('capacity-analysis');
+  var usageBar = document.getElementById('usage-bar');
+  var capacityStats = document.getElementById('capacity-stats');
+  var capacityBadge = document.getElementById('capacity-badge');
+  
+  if (!capacityAnalysis || !usageBar || !capacityStats) return;
+  
+  capacityAnalysis.style.display = 'block';
+  
+  usageBar.style.width = '100%';
+  usageBar.className = 'progress-bar bg-danger';
+  
+  // Calculate max capacity with 4-LSB
+  var availablePixels = (imageWidth * imageHeight) - SENTINEL_PIXELS;
+  var maxCapacity = Math.floor((availablePixels * 3 * MAX_LSB_BITS) / 8);
+  
+  capacityStats.textContent = 'Message too large! ' + messageBytes.toLocaleString() + 
+                              ' bytes exceeds maximum capacity of ' + maxCapacity.toLocaleString() + ' bytes';
+  capacityStats.classList.add('text-danger');
+  
+  // Update capacity badge to show error
+  if (capacityBadge) {
+    capacityBadge.style.display = 'inline-block';
+    capacityBadge.textContent = '💾 ' + messageBytes.toLocaleString() + ' / ' + 
+                                maxCapacity.toLocaleString() + ' bytes (Too Large!)';
+    capacityBadge.className = 'badge bg-danger';
+  }
+}
+
+function detectLsbMode() {
+  try {
+    var canvas = document.querySelector('.decode canvas');
+    if (!canvas) return;
+    
+    var ctx = canvas.getContext("2d", { willReadFrequently: true });
+    var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    var pixel = imageData.data;
+    
+    // Always read sentinel in 1-LSB mode (first 19 pixels = 57 bits, we need 56)
+    var sentinelBits = "";
+    for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelBits.length < SENTINEL_BITS; i += 4) {
+      for (var offset = 0; offset < 3; offset++) {
+        sentinelBits += (pixel[i + offset] & 1).toString();
+        if (sentinelBits.length >= SENTINEL_BITS) break;
+      }
+    }
+    
+    // Parse sentinel structure
+    var magic = sentinelBits.substring(0, 16);
+    var detectedMode = 1;
+    var messageLength = 0;
+    var isV3 = false;
+    
+    if (magic === MAGIC_V3) {
+      // v3 format detected!
+      detectedMode = parseInt(sentinelBits.substring(16, 20), 2);
+      // Reserved bits 20-23 (skip)
+      messageLength = parseInt(sentinelBits.substring(24, 56), 2);
+      isV3 = true;
+    }
+    
+    // Update UI
+    var detector = document.getElementById('decode-mode-detector');
+    var modeText = document.getElementById('detected-mode-text');
+    var modeIcon = document.getElementById('detected-mode-icon');
+    
+    if (detector && modeText && modeIcon) {
+      modeText.textContent = detectedMode + '-LSB';
+      modeIcon.textContent = isV3 ? '✓' : '⚠️';
+      detector.style.display = 'block';
+      
+      // Store detected mode and message length for decode
+      detector.setAttribute('data-detected-mode', detectedMode);
+      detector.setAttribute('data-is-v3', isV3);
+      detector.setAttribute('data-message-length', messageLength);
+      
+      // Reset manual override to hidden
+      var autoDetected = document.getElementById('auto-detected');
+      var manualSelect = document.getElementById('manual-mode-select');
+      if (autoDetected) autoDetected.style.display = 'block';
+      if (manualSelect) manualSelect.style.display = 'none';
+    }
+  } catch (error) {
+    console.error('Mode detection failed:', error);
+  }
 }
 
 function previewEncodeImage() {
@@ -468,10 +838,13 @@ function previewEncodeImage() {
         return;
       }
       
-      // Calculate and validate capacity (subtract header overhead)
-      var totalBits = canvas.width * canvas.height * 3;
-      var availableBits = totalBits - LENGTH_HEADER_BITS;
-      var capacity = Math.floor(availableBits / 8);
+      // Default to 1-LSB for initial display
+      var lsbBits = 1;
+      
+      // Calculate capacity based on v3 format
+      var availablePixels = (canvas.width * canvas.height) - SENTINEL_PIXELS;
+      var totalBits = availablePixels * lsbBits * 3;
+      var capacity = Math.floor(totalBits / 8);
       
       if (!validateCapacity(capacity)) {
         return;
@@ -479,21 +852,35 @@ function previewEncodeImage() {
       
       document.querySelector(".images .original").style.display = 'block';
       document.querySelector(".images").style.display = 'block';
-      document.getElementById('encode-capacity-value').textContent = capacity.toLocaleString();
-      document.getElementById('encode-capacity').style.display = 'block';
+      
+      // Show capacity badge
+      var capacityBadge = document.getElementById('capacity-badge');
+      if (capacityBadge) {
+        capacityBadge.style.display = 'inline-block';
+        capacityBadge.textContent = '💾 0 / ' + capacity.toLocaleString() + ' bytes (' + lsbBits + '-LSB)';
+      }
       
       // Update modal with current image data
-      updateModalWithImageData(canvas.width, canvas.height, capacity);
+      updateModalWithImageData(canvas.width, canvas.height, capacity, lsbBits);
+      
+      // Trigger message analysis if there's text in the textarea
+      var messageText = document.querySelector('textarea.message').value;
+      if (messageText) {
+        updateMessageAnalysis(messageText);
+      }
     } catch (error) {
       showError('Error processing image: ' + error.message);
     }
   });
 }
 
-function updateModalWithImageData(width, height, capacity) {
+function updateModalWithImageData(width, height, capacity, lsbBitsPerChannel) {
+  lsbBitsPerChannel = lsbBitsPerChannel || 1;  // Default to 1-LSB if not provided
+  
   var totalPixels = width * height;
+  var availablePixels = totalPixels - SENTINEL_PIXELS;  // Subtract sentinel pixels
   var totalBitsInImage = totalPixels * 3 * 8;  // Total bits (all 8 bits per channel)
-  var lsbBits = totalPixels * 3;  // LSB bits (1 bit per channel)
+  var lsbBitsAvailable = availablePixels * 3 * lsbBitsPerChannel;  // Use selected LSB mode
   
   // Update image info using safe DOM creation
   var modalImageInfo = document.getElementById('modalImageInfo');
@@ -523,21 +910,36 @@ function updateModalWithImageData(width, height, capacity) {
   modalImageInfo.appendChild(document.createElement('br'));
   modalImageInfo.appendChild(createCodeLine('Size: ', width + ' × ' + height, 'pixels'));
   modalImageInfo.appendChild(createCodeLine('Total pixels: ', totalPixels.toLocaleString(), ''));
-  modalImageInfo.appendChild(createCodeLine('Total bits: ', totalBitsInImage.toLocaleString(), '(all image data)'));
-  modalImageInfo.appendChild(createCodeLine('LSB bits: ', lsbBits.toLocaleString(), '(available for hiding)'));
+  modalImageInfo.appendChild(createCodeLine('Sentinel overhead: ', '19 pixels (7 bytes)', ''));
+  modalImageInfo.appendChild(createCodeLine('Available pixels: ', availablePixels.toLocaleString(), ''));
+  modalImageInfo.appendChild(createCodeLine('Current mode: ', lsbBitsPerChannel + '-LSB', ''));
   modalImageInfo.appendChild(createCodeLine('Capacity: ', capacity.toLocaleString(), 'bytes'));
+  
+  // Add per-mode capacity comparison
+  modalImageInfo.appendChild(document.createElement('br'));
+  var strongModes = document.createElement('strong');
+  strongModes.textContent = 'Capacity by LSB Mode:';
+  modalImageInfo.appendChild(strongModes);
+  modalImageInfo.appendChild(document.createElement('br'));
+  
+  for (var mode = 1; mode <= MAX_LSB_BITS; mode++) {
+    var modeCapacity = Math.floor((availablePixels * 3 * mode) / 8);
+    var indicator = mode === lsbBitsPerChannel ? ' ← Current' : '';
+    modalImageInfo.appendChild(createCodeLine(mode + '-LSB: ', modeCapacity.toLocaleString(), 'bytes' + indicator));
+  }
   
   // Update calculation steps using safe DOM creation
   var modalCalcSteps = document.getElementById('modalCalcSteps');
   modalCalcSteps.textContent = ''; // Clear existing content
   
   var strongCalc = document.createElement('strong');
-  strongCalc.textContent = 'Step-by-step:';
+  strongCalc.textContent = 'Step-by-step (v3 format):';
   modalCalcSteps.appendChild(strongCalc);
   modalCalcSteps.appendChild(document.createElement('br'));
-  modalCalcSteps.appendChild(createCodeLine('1. ', width.toLocaleString() + ' × ' + height.toLocaleString() + ' = ' + totalPixels.toLocaleString(), 'pixels'));
-  modalCalcSteps.appendChild(createCodeLine('2. ', totalPixels.toLocaleString() + ' × 3 = ' + lsbBits.toLocaleString(), 'LSB bits (3 channels)'));
-  modalCalcSteps.appendChild(createCodeLine('3. ', lsbBits.toLocaleString() + ' ÷ 8 = ' + capacity.toLocaleString(), 'bytes'));
+  modalCalcSteps.appendChild(createCodeLine('1. ', width.toLocaleString() + ' × ' + height.toLocaleString() + ' = ' + totalPixels.toLocaleString(), 'total pixels'));
+  modalCalcSteps.appendChild(createCodeLine('2. ', totalPixels.toLocaleString() + ' - 19 = ' + availablePixels.toLocaleString(), 'pixels (minus sentinel)'));
+  modalCalcSteps.appendChild(createCodeLine('3. ', availablePixels.toLocaleString() + ' × 3 × ' + lsbBitsPerChannel + ' = ' + lsbBitsAvailable.toLocaleString(), 'LSB bits'));
+  modalCalcSteps.appendChild(createCodeLine('4. ', lsbBitsAvailable.toLocaleString() + ' ÷ 8 = ' + capacity.toLocaleString(), 'bytes capacity'));
 }
 
 function previewImage(file, canvasSelector, callback) {
@@ -611,21 +1013,36 @@ function encodeMessage() {
       return;
     }
     
-    // Calculate capacity (accounting for 32-bit header)
-    var totalBits = width * height * 3;
-    var availableBits = totalBits - LENGTH_HEADER_BITS;
-    var maxCapacity = Math.floor(availableBits / 8);
+    // Get LSB mode from auto-selection or manual override
+    var lsbBits = 1;
+    var manualOverride = document.getElementById('manual-mode-override');
+    var isManual = manualOverride && manualOverride.style.display !== 'none';
+    
+    if (isManual) {
+      lsbBits = parseInt(document.getElementById('manual-lsb-mode').value);
+    } else {
+      var autoModeBadge = document.getElementById('auto-mode-badge');
+      if (autoModeBadge) {
+        lsbBits = parseInt(autoModeBadge.getAttribute('data-auto-mode') || 1);
+      }
+    }
+    
+    // Calculate capacity (accounting for v3 sentinel)
+    var availablePixels = (width * height) - SENTINEL_PIXELS;
+    var totalBits = availablePixels * lsbBits * 3;
+    var maxCapacity = Math.floor(totalBits / 8);
     
     if (!validateCapacity(maxCapacity)) {
       return;
     }
 
     // Check if the image is big enough to hide the message
-    var requiredBits = LENGTH_HEADER_BITS + (messageBytes.length * 8);
-    if (requiredBits > totalBits) {
+    var requiredBits = SENTINEL_BITS + (messageBytes.length * 8);
+    var totalAvailableBits = (width * height) * 3;  // Total bits in image
+    if (requiredBits > (availablePixels * lsbBits * 3 + SENTINEL_BITS)) {
       showError('Message too long! Your message is ' + messageBytes.length.toLocaleString() + 
                 ' bytes but this image can only hide ' + maxCapacity.toLocaleString() + 
-                ' bytes. Please use a larger image or shorter message.');
+                ' bytes with ' + lsbBits + '-LSB mode. Please use a larger image or shorter message.');
       return;
     }
 
@@ -635,58 +1052,82 @@ function encodeMessage() {
     messageCanvas.width = width;
     messageCanvas.height = height;
 
-    // Normalize the original image and draw it
+    // Normalize the original image: clear 1-LSB for sentinel, N-LSB for message
     var original = originalContext.getImageData(0, 0, width, height);
     var pixel = original.data;
-    for (var i = 0, n = pixel.length; i < n; i += 4) {
+    
+    // Clear 1-LSB for sentinel pixels (first 19 pixels)
+    for (var i = 0; i < SENTINEL_PIXELS * 4; i += 4) {
       for (var offset = 0; offset < 3; offset++) {
-        if(pixel[i + offset] % 2 != 0) {
-          pixel[i + offset]--;
-        }
+        pixel[i + offset] = (pixel[i + offset] & 0xFE) & 0xFF;  // Clear 1 LSB
+      }
+    }
+    
+    // Clear N-LSB for message pixels (remaining pixels)
+    var mask = ~((1 << lsbBits) - 1) & 0xFF;
+    for (var i = SENTINEL_PIXELS * 4; i < pixel.length; i += 4) {
+      for (var offset = 0; offset < 3; offset++) {
+        pixel[i + offset] = (pixel[i + offset] & mask) & 0xFF;
       }
     }
     nulledContext.putImageData(original, 0, 0);
 
-    // Create 32-bit header with byte length
-    var lengthBinary = messageBytes.length.toString(2);
-    while(lengthBinary.length < LENGTH_HEADER_BITS) {
-      lengthBinary = "0" + lengthBinary;
-    }
+    // Create 56-bit v3 sentinel: magic(16) + mode(4) + reserved(4) + length(32)
+    var magicBinary = MAGIC_V3;  // 16 bits: 1010101001010101 (0xAA55)
+    var modeBinary = lsbBits.toString(2).padStart(4, '0');  // 4 bits: 0001-0100
+    var reservedBinary = '0000';  // 4 bits: reserved for future use
+    var lengthBinary = messageBytes.length.toString(2).padStart(32, '0');  // 32 bits
+    var sentinelBinary = magicBinary + modeBinary + reservedBinary + lengthBinary;
 
-    // Convert the UTF-8 bytes to a binary string using array for better performance
+    // Convert the UTF-8 bytes to a binary string
     var messageBinaryArray = [];
     for (var i = 0; i < messageBytes.length; i++) {
-      var binaryByte = messageBytes[i].toString(2);
-
-      // Pad with 0 until the binaryByte has a length of 8 (1 Byte)
-      while(binaryByte.length < 8) {
-        binaryByte = "0" + binaryByte;
-      }
-
+      var binaryByte = messageBytes[i].toString(2).padStart(8, '0');
       messageBinaryArray.push(binaryByte);
     }
     var messageBinary = messageBinaryArray.join('');
     
-    // Prepend length header to message
-    var binaryMessage = lengthBinary + messageBinary;
-    
+    var binaryMessage = sentinelBinary + messageBinary;
     document.querySelector('.binary .card-body').textContent = binaryMessage;
 
-  // Apply the binary string to the image and draw it
-  var message = nulledContext.getImageData(0, 0, width, height);
-  pixel = message.data;
-  var counter = 0;
-  for (var i = 0, n = pixel.length; i < n; i += 4) {
-    for (var offset = 0; offset < 3; offset++) {
-      if (counter < binaryMessage.length) {
-        pixel[i + offset] += parseInt(binaryMessage[counter]);
-        counter++;
-      }
-      else {
-        break;
+    // Apply the binary string to the image
+    var message = nulledContext.getImageData(0, 0, width, height);
+    pixel = message.data;
+    var sentinelCounter = 0;
+    var messageCounter = 0;
+    
+    // Step 1: Embed sentinel using 1-LSB (first 19 pixels = 57 bits, we use 56)
+    for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelCounter < SENTINEL_BITS; i += 4) {
+      for (var offset = 0; offset < 3; offset++) {
+        if (sentinelCounter < SENTINEL_BITS) {
+          var bit = parseInt(sentinelBinary[sentinelCounter], 2);
+          pixel[i + offset] = (pixel[i + offset] | bit) & 0xFF;
+          sentinelCounter++;
+        }
       }
     }
-  }
+    
+    // Step 2: Embed message data using N-LSB mode (starting from pixel 20)
+    for (var i = SENTINEL_PIXELS * 4; i < pixel.length; i += 4) {
+      for (var offset = 0; offset < 3; offset++) {
+        if (messageCounter + lsbBits <= messageBinary.length) {
+          // Extract N bits from message binary
+          var bits = parseInt(messageBinary.substr(messageCounter, lsbBits), 2);
+          pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
+          messageCounter += lsbBits;
+        } else if (messageCounter < messageBinary.length) {
+          // Handle remaining bits if message doesn't align perfectly
+          var remaining = messageBinary.substr(messageCounter);
+          var bits = parseInt(remaining.padEnd(lsbBits, '0'), 2);
+          pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
+          messageCounter = messageBinary.length;
+          break;
+        } else {
+          break;
+        }
+      }
+      if (messageCounter >= messageBinary.length) break;
+    }
     messageContext.putImageData(message, 0, 0);
 
     // Display capacity utilization
@@ -708,7 +1149,7 @@ function encodeMessage() {
     progressBar.style.width = utilizationPercent + '%';
     progressBar.setAttribute('aria-valuenow', utilizationPercent);
     capacityText.textContent = utilizationPercent + '%';
-    capacityDetails.textContent = 'Hidden ' + messageBytes.length.toLocaleString() + ' bytes of ' + maxCapacity.toLocaleString() + ' available. ' + (maxCapacity - messageBytes.length).toLocaleString() + ' bytes remaining.';
+    capacityDetails.textContent = 'Hidden ' + messageBytes.length.toLocaleString() + ' bytes of ' + maxCapacity.toLocaleString() + ' available (' + lsbBits + '-LSB mode). ' + (maxCapacity - messageBytes.length).toLocaleString() + ' bytes remaining.';
     
     document.querySelector(".capacity-bar").style.display = 'block';
     document.querySelector(".binary").style.display = 'block';
@@ -757,39 +1198,26 @@ function decodeMessage() {
     
     var originalContext = originalCanvas.getContext("2d", { willReadFrequently: true });
     var original = originalContext.getImageData(0, 0, width, height);
-    
-    // Calculate maximum capacity
-    var totalBits = width * height * 3;
-    var maxCapacity = Math.floor((totalBits - LENGTH_HEADER_BITS) / 8);
-    
-    if (!validateCapacity(maxCapacity)) {
-      return;
-    }
-    
-    // Extract all LSBs
-    var binaryData = "";
     var pixel = original.data;
-    for (var i = 0, n = pixel.length; i < n; i += 4) {
-      for (var offset = 0; offset < 3; offset++) {
-        var value = 0;
-        if(pixel[i + offset] % 2 != 0) {
-          value = 1;
-        }
-        binaryData += value;
-      }
+    
+    // Get detected mode and message length from detector
+    var detector = document.getElementById('decode-mode-detector');
+    var lsbBits = 1;
+    var messageLength = 0;
+    var isV3 = false;
+    
+    if (detector) {
+      lsbBits = parseInt(detector.getAttribute('data-detected-mode') || 1);
+      messageLength = parseInt(detector.getAttribute('data-message-length') || 0);
+      isV3 = detector.getAttribute('data-is-v3') === 'true';
     }
     
-    // Check if we have enough data for header
-    if (binaryData.length < LENGTH_HEADER_BITS) {
-      showError('Image too small or does not contain a hidden message.', 'decode');
+    if (!isV3) {
+      showError('This image does not contain a valid v3 steganographic message. Please ensure the image was encoded with this tool.', 'decode');
       return;
     }
     
-    // Read 32-bit length header
-    var lengthBinary = binaryData.substring(0, LENGTH_HEADER_BITS);
-    var messageLength = parseInt(lengthBinary, 2);
-    
-    // Validate message length from header
+    // Validate message length from sentinel
     if (!Number.isSafeInteger(messageLength) || messageLength < 0) {
       showError('Invalid or corrupted steganographic image.', 'decode');
       return;
@@ -805,20 +1233,42 @@ function decodeMessage() {
       return;
     }
     
+    // Calculate maximum capacity based on LSB mode
+    var availablePixels = (width * height) - SENTINEL_PIXELS;
+    var maxCapacity = Math.floor((availablePixels * lsbBits * 3) / 8);
+    
+    if (!validateCapacity(maxCapacity)) {
+      return;
+    }
+    
     if (messageLength > maxCapacity) {
       showError('Corrupted image: Declared message length (' + messageLength.toLocaleString() + 
                 ') exceeds image capacity (' + maxCapacity.toLocaleString() + ').', 'decode');
       return;
     }
     
-    // Extract message binary (skip header)
-    var messageBinary = binaryData.substring(LENGTH_HEADER_BITS, LENGTH_HEADER_BITS + (messageLength * 8));
+    // Extract message data using N-LSB mode (starting from pixel 20)
+    var messageBinary = "";
+    var mask = (1 << lsbBits) - 1;  // Create mask for N bits
+    var requiredBits = messageLength * 8;
+    
+    for (var i = SENTINEL_PIXELS * 4; i < pixel.length && messageBinary.length < requiredBits; i += 4) {
+      for (var offset = 0; offset < 3; offset++) {
+        if (messageBinary.length >= requiredBits) break;
+        var extracted = pixel[i + offset] & mask;
+        var binary = extracted.toString(2).padStart(lsbBits, '0');
+        messageBinary += binary;
+      }
+    }
     
     // Check if we have enough data
-    if (messageBinary.length < messageLength * 8) {
+    if (messageBinary.length < requiredBits) {
       showError('Incomplete message data in image.', 'decode');
       return;
     }
+    
+    // Trim to exact message length
+    messageBinary = messageBinary.substring(0, requiredBits);
     
     // Convert binary to UTF-8 byte array
     var byteArray = new Uint8Array(messageLength);
@@ -845,7 +1295,7 @@ function decodeMessage() {
     document.getElementById('decode-capacity-available-bar').style.width = availablePercent + '%';
     document.getElementById('decode-capacity-available-text').textContent = 'Available: ' + availablePercent + '%';
     document.getElementById('decode-capacity-details').textContent = 
-      'Decoded ' + messageLength.toLocaleString() + ' bytes of ' + maxCapacity.toLocaleString() + ' total capacity. ' + 
+      'Decoded ' + messageLength.toLocaleString() + ' bytes of ' + maxCapacity.toLocaleString() + ' total capacity (' + lsbBits + '-LSB mode). ' + 
       (maxCapacity - messageLength).toLocaleString() + ' bytes unused.';
     
     document.querySelector('.decode-capacity-bar').style.display = 'block';

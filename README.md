@@ -20,19 +20,46 @@ If you want to learn about Steganography in detail head over to [the Wikipedia a
 
 ## Implementation Details
 
-The User chooses an image, the image data is then normalized, meaning that each RGB value is decremented by one if it is not even. 
-This is done for every pixel in the image.
+### v3 Format - Fixed Sentinel Architecture
 
-Next the message is converted to a binary representation, 8 Bits per character of the message. This binary representation 
-is then applied to the normalized image, 3 Bit per pixel. This concludes, that the maximal length of a message hidden in 
-an image is:
+This application uses a **two-layer encoding system** for reliable detection and optimal capacity:
 
-    Image Width * Image Height * 3
-    ------------------------------
-                  8
+**Layer 1: Fixed Sentinel (Always 1-LSB)**
+- First 19 pixels store metadata in stealth 1-LSB mode
+- Magic number: `0xAA55` (16 bits) for format detection
+- LSB mode: 4 bits (1-4) used for message
+- Reserved: 4 bits for future extensions
+- Message length: 32 bits (supports up to 4GB)
+- Total overhead: 56 bits (7 bytes)
 
-Since the image was normalized, we now know that an **even** r, g or b value is **0** and an **uneven** is a **1**. And this is how the
- message is decoded back from the image.
+**Layer 2: Variable Message (Auto-Selected N-LSB)**
+- Remaining pixels use optimal LSB mode (1-4)
+- **Smart auto-selection**: Automatically picks minimum LSB mode needed
+- Manual override: Users can force specific mode if desired
+
+### LSB Mode Comparison
+
+| Mode  | Capacity | Visual Impact | Overhead | Use Case |
+|-------|----------|---------------|----------|----------|
+| 1-LSB | Baseline | Invisible (±1) | 7 bytes | Maximum stealth |
+| 2-LSB | 2× more  | Barely visible (±3) | 7 bytes | Balanced |
+| 3-LSB | 3× more  | Slight noise (±7) | 7 bytes | Large messages |
+| 4-LSB | 4× more  | Visible (±15) | 7 bytes | Maximum capacity |
+
+### How It Works
+
+1. **Auto-Selection**: System calculates minimum LSB mode needed for your message
+2. **Normalization**: Image cleared - 1-LSB for sentinel pixels, N-LSB for message pixels
+3. **Sentinel Encoding**: First 19 pixels encode metadata using 1-LSB (100% reliable detection)
+4. **Message Encoding**: Remaining pixels encode message using auto-selected N-LSB mode
+5. **Capacity Formula**:
+   ```
+   Available Pixels = (Width × Height) - 19
+   Capacity = (Available Pixels × N × 3) ÷ 8 bytes
+   ```
+6. **Detection**: Always reads first 19 pixels in 1-LSB mode, validates `0xAA55` magic number
+7. **Decoding**: Extracts message using detected LSB mode from sentinel
+8. **Real-Time Feedback**: Live character counter, capacity analysis, and utilization progress bar
 
 ## Additional layers of security
 
@@ -52,17 +79,23 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 - Comprehensive input validation (file type, size, dimensions)
 - UTF-8 character encoding support (replaces charCodeAt limitation)
 - XSS protection with safe DOM manipulation
-- 32-bit message length header for data integrity
+- v3 format: 56-bit fixed sentinel (0xAA55 magic + mode + reserved + length)
+- Two-layer architecture: 1-LSB sentinel + N-LSB message
 - Memory leak prevention and rate limiting
 - Removed GIF support (incompatible with LSB algorithm)
 
 **User Interface:**
+- **Smart auto LSB mode selection** with real-time capacity analysis
+- **Dynamic badge system**: Live character counter + capacity feedback (stacked)
+- **Automatic mode detection** on decode with manual override option
+- Color-coded progress bar (green → yellow → orange → red)
 - Dark/light mode toggle with localStorage persistence
 - Modern Bootstrap 5.3 card-based layout
 - Interactive fullscreen image comparison slider
 - Direct download buttons (no more right-click instructions)
+- Drag-and-drop file upload support
 - Responsive mobile-optimized design
-- Educational modal explaining LSB steganography
+- Educational modal explaining LSB steganography (v3 two-layer architecture)
 
 **Performance:**
 - TextEncoder/TextDecoder for proper Unicode handling
