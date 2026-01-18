@@ -13,6 +13,49 @@ const MAGIC_V3 = '1010101001010101';       // 0xAA55 (16-bit magic number)
 const MIN_LSB_BITS = 1;                    // Minimum LSB mode
 const MAX_LSB_BITS = 4;                    // Maximum LSB mode
 
+// Performance: Reusable encoder/decoder (stateless)
+const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
+
+// Performance: DOM element cache
+const DOM_CACHE = {
+  messageTextarea: null,
+  errorElement: null,
+  errorDecodeElement: null,
+  originalCanvas: null,
+  nulledCanvas: null,
+  messageCanvas: null,
+  decodeCanvas: null,
+  
+  // Getter with null check
+  get(key) {
+    if (!this[key]) {
+      const selectors = {
+        messageTextarea: 'textarea.message',
+        errorElement: '.error',
+        errorDecodeElement: '.error-decode',
+        originalCanvas: '.original canvas',
+        nulledCanvas: '.nulled canvas',
+        messageCanvas: '.message canvas',
+        decodeCanvas: '.decode canvas'
+      };
+      if (selectors[key]) {
+        this[key] = document.querySelector(selectors[key]);
+      }
+    }
+    return this[key];
+  },
+  
+  // Clear cache (call when DOM changes)
+  clear() {
+    Object.keys(this).forEach(key => {
+      if (typeof this[key] !== 'function') {
+        this[key] = null;
+      }
+    });
+  }
+};
+
 // Validation Functions
 function validateFileType(file) {
   if (!file) {
@@ -73,9 +116,9 @@ function validateCapacity(capacity) {
 function showError(message, context) {
   var errorElement;
   if (context === 'decode') {
-    errorElement = document.querySelector(".error-decode");
+    errorElement = DOM_CACHE.get('errorDecodeElement');
   } else {
-    errorElement = document.querySelector(".error");
+    errorElement = DOM_CACHE.get('errorElement');
   }
   
   if (errorElement) {
@@ -103,12 +146,13 @@ var comparisonModal = {
   downloadLeftName: null,
   downloadRightName: null,
   isDragging: false,
+  rafId: null,
   currentComparison: {left: null, right: null},
   
   canvasSources: {
-    'original': function() { return document.querySelector('.original canvas'); },
-    'normalized': function() { return document.querySelector('.nulled canvas'); },
-    'encoded': function() { return document.querySelector('.message canvas'); }
+    'original': function() { return DOM_CACHE.get('originalCanvas'); },
+    'normalized': function() { return DOM_CACHE.get('nulledCanvas'); },
+    'encoded': function() { return DOM_CACHE.get('messageCanvas'); }
   },
   
   comparisonLabels: {
@@ -139,7 +183,7 @@ function initComparisonModal() {
     if (!source || !target) return;
     target.width = source.width;
     target.height = source.height;
-    var ctx = target.getContext('2d');
+    var ctx = target.getContext('2d', { desynchronized: true });
     ctx.drawImage(source, 0, 0);
     
     // Calculate display size to fit within viewport while maintaining aspect ratio
@@ -212,22 +256,33 @@ function initComparisonModal() {
   function drag(e) {
     if (!comparisonModal.isDragging) return;
     
-    var rect = comparisonModal.container.getBoundingClientRect();
-    var clientX;
+    // Throttle with requestAnimationFrame (60fps max)
+    if (comparisonModal.rafId) return;
     
-    if (e.type.includes('touch')) {
-      clientX = e.touches[0].clientX;
-    } else {
-      clientX = e.clientX;
-    }
-    
-    var x = clientX - rect.left;
-    var percentage = (x / rect.width) * 100;
-    updateSliderPosition(percentage);
+    comparisonModal.rafId = requestAnimationFrame(() => {
+      var rect = comparisonModal.container.getBoundingClientRect();
+      var clientX;
+      
+      if (e.type.includes('touch')) {
+        clientX = e.touches[0].clientX;
+      } else {
+        clientX = e.clientX;
+      }
+      
+      var x = clientX - rect.left;
+      var percentage = (x / rect.width) * 100;
+      updateSliderPosition(percentage);
+      
+      comparisonModal.rafId = null;
+    });
   }
   
   function stopDrag() {
     comparisonModal.isDragging = false;
+    if (comparisonModal.rafId) {
+      cancelAnimationFrame(comparisonModal.rafId);
+      comparisonModal.rafId = null;
+    }
   }
   
   // Mouse events
@@ -347,7 +402,7 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   // Message textarea - real-time character counter and auto LSB selection
-  var messageTextarea = document.querySelector('textarea.message');
+  var messageTextarea = DOM_CACHE.get('messageTextarea');
   if (messageTextarea) {
     messageTextarea.addEventListener('input', function() {
       updateMessageAnalysis(this.value);
@@ -364,7 +419,7 @@ document.addEventListener('DOMContentLoaded', function() {
       document.getElementById('capacity-analysis').style.display = 'none';
       document.getElementById('manual-mode-override').style.display = 'block';
       // Trigger recalculation with manual mode
-      var text = document.querySelector('textarea.message').value;
+      var text = DOM_CACHE.get('messageTextarea')?.value || '';
       if (text) {
         updateMessageAnalysis(text);
       }
@@ -376,7 +431,7 @@ document.addEventListener('DOMContentLoaded', function() {
       document.getElementById('manual-mode-override').style.display = 'none';
       document.getElementById('capacity-analysis').style.display = 'block';
       // Trigger recalculation with auto mode
-      var text = document.querySelector('textarea.message').value;
+      var text = DOM_CACHE.get('messageTextarea')?.value || '';
       if (text) {
         updateMessageAnalysis(text);
       }
@@ -386,7 +441,7 @@ document.addEventListener('DOMContentLoaded', function() {
   if (manualSelect) {
     manualSelect.addEventListener('change', function() {
       // Recalculate with manual mode
-      var text = document.querySelector('textarea.message').value;
+      var text = DOM_CACHE.get('messageTextarea')?.value || '';
       if (text) {
         updateMessageAnalysis(text);
       }
@@ -563,7 +618,7 @@ function getRecommendation(lsbMode, utilization) {
 
 function updateMessageAnalysis(text) {
   var charCount = text.length;
-  var encoder = new TextEncoder();
+  const encoder = TEXT_ENCODER;
   var byteCount = encoder.encode(text).length;
   
   // Update counter badge
@@ -573,7 +628,7 @@ function updateMessageAnalysis(text) {
   }
   
   // Get image dimensions
-  var canvas = document.querySelector('.original canvas');
+  var canvas = DOM_CACHE.get('originalCanvas');
   if (!canvas || canvas.width === 0) {
     document.getElementById('capacity-analysis').style.display = 'none';
     // Hide capacity badge if no image
@@ -772,7 +827,7 @@ function showCapacityError(messageBytes, imageWidth, imageHeight) {
 
 function detectLsbMode() {
   try {
-    var canvas = document.querySelector('.decode canvas');
+    var canvas = DOM_CACHE.get('decodeCanvas');
     if (!canvas) return;
     
     var ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -780,13 +835,14 @@ function detectLsbMode() {
     var pixel = imageData.data;
     
     // Always read sentinel in 1-LSB mode (first 19 pixels = 57 bits, we need 56)
-    var sentinelBits = "";
-    for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelBits.length < SENTINEL_BITS; i += 4) {
+    var sentinelBitsArray = [];
+    for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelBitsArray.length < SENTINEL_BITS; i += 4) {
       for (var offset = 0; offset < 3; offset++) {
-        sentinelBits += (pixel[i + offset] & 1).toString();
-        if (sentinelBits.length >= SENTINEL_BITS) break;
+        sentinelBitsArray.push((pixel[i + offset] & 1).toString());
+        if (sentinelBitsArray.length >= SENTINEL_BITS) break;
       }
     }
+    var sentinelBits = sentinelBitsArray.join('');
     
     // Parse sentinel structure
     var magic = sentinelBits.substring(0, 16);
@@ -838,11 +894,12 @@ function previewEncodeImage() {
   document.querySelector(".images .nulled").style.display = 'none';
   document.querySelector(".images .message").style.display = 'none';
   document.querySelector(".capacity-bar").style.display = 'none';
-  document.querySelector(".error").style.display = 'none';
+  var errorElement = DOM_CACHE.get('errorElement');
+  if (errorElement) errorElement.style.display = 'none';
 
   previewImage(file, ".original canvas", function() {
     try {
-      var canvas = document.querySelector('.original canvas');
+      var canvas = DOM_CACHE.get('originalCanvas');
       
       // Validate dimensions
       if (!validateImageDimensions(canvas.width, canvas.height)) {
@@ -875,7 +932,7 @@ function previewEncodeImage() {
       updateModalWithImageData(canvas.width, canvas.height, capacity, lsbBits);
       
       // Trigger message analysis if there's text in the textarea
-      var messageText = document.querySelector('textarea.message').value;
+      var messageText = DOM_CACHE.get('messageTextarea')?.value || '';
       if (messageText) {
         updateMessageAnalysis(messageText);
       }
@@ -983,12 +1040,13 @@ function encodeMessage() {
     encodeButton.disabled = true;
   }
   
-  document.querySelector(".error").style.display = 'none';
+  var errorElement = DOM_CACHE.get('errorElement');
+  if (errorElement) errorElement.style.display = 'none';
   document.querySelector(".binary").style.display = 'none';
   document.querySelector(".capacity-bar").style.display = 'none';
 
   try {
-    var text = document.querySelector("textarea.message").value;
+    var text = DOM_CACHE.get('messageTextarea')?.value || '';
     
     // Validate message is not empty
     if (!text || text.length === 0) {
@@ -997,15 +1055,15 @@ function encodeMessage() {
     }
     
     // Encode to UTF-8 and validate byte length
-    var encoder = new TextEncoder();
+    const encoder = TEXT_ENCODER;
     var messageBytes = encoder.encode(text);
     if (!validateMessageLength(messageBytes.length)) {
       return;
     }
 
-    var originalCanvas = document.querySelector('.original canvas');
-    var nulledCanvas = document.querySelector('.nulled canvas');
-    var messageCanvas = document.querySelector('.message canvas');
+    var originalCanvas = DOM_CACHE.get('originalCanvas');
+    var nulledCanvas = DOM_CACHE.get('nulledCanvas');
+    var messageCanvas = DOM_CACHE.get('messageCanvas');
 
     if (!originalCanvas || !nulledCanvas || !messageCanvas) {
       showError('Please upload an image first.');
@@ -1123,12 +1181,12 @@ function encodeMessage() {
       for (var offset = 0; offset < 3; offset++) {
         if (messageCounter + lsbBits <= messageBinary.length) {
           // Extract N bits from message binary
-          var bits = parseInt(messageBinary.substr(messageCounter, lsbBits), 2);
+          var bits = parseInt(messageBinary.substring(messageCounter, messageCounter + lsbBits), 2);
           pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
           messageCounter += lsbBits;
         } else if (messageCounter < messageBinary.length) {
           // Handle remaining bits if message doesn't align perfectly
-          var remaining = messageBinary.substr(messageCounter);
+          var remaining = messageBinary.substring(messageCounter);
           var bits = parseInt(remaining.padEnd(lsbBits, '0'), 2);
           pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
           messageCounter = messageBinary.length;
@@ -1186,13 +1244,13 @@ function decodeMessage() {
     decodeButton.disabled = true;
   }
   
-  var errorDecode = document.querySelector(".error-decode");
+  var errorDecode = DOM_CACHE.get('errorDecodeElement');
   if (errorDecode) {
     errorDecode.style.display = 'none';
   }
   
   try {
-    var originalCanvas = document.querySelector('.decode canvas');
+    var originalCanvas = DOM_CACHE.get('decodeCanvas');
     
     if (!originalCanvas) {
       showError('Please upload an image first.', 'decode');
@@ -1259,18 +1317,19 @@ function decodeMessage() {
     }
     
     // Extract message data using N-LSB mode (starting from pixel 20)
-    var messageBinary = "";
+    var messageBinaryArray = [];
     var mask = (1 << lsbBits) - 1;  // Create mask for N bits
     var requiredBits = messageLength * 8;
     
-    for (var i = SENTINEL_PIXELS * 4; i < pixel.length && messageBinary.length < requiredBits; i += 4) {
+    for (var i = SENTINEL_PIXELS * 4; i < pixel.length && messageBinaryArray.length * lsbBits < requiredBits; i += 4) {
       for (var offset = 0; offset < 3; offset++) {
-        if (messageBinary.length >= requiredBits) break;
+        if (messageBinaryArray.length * lsbBits >= requiredBits) break;
         var extracted = pixel[i + offset] & mask;
         var binary = extracted.toString(2).padStart(lsbBits, '0');
-        messageBinary += binary;
+        messageBinaryArray.push(binary);
       }
     }
+    var messageBinary = messageBinaryArray.join('');
     
     // Check if we have enough data
     if (messageBinary.length < requiredBits) {
@@ -1293,7 +1352,7 @@ function decodeMessage() {
     }
     
     // Decode UTF-8 bytes to text
-    var decoder = new TextDecoder();
+    const decoder = TEXT_DECODER;
     var output = decoder.decode(byteArray);
     
     // Calculate capacity utilization

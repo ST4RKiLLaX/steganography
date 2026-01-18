@@ -732,6 +732,17 @@
         font-size: 2.5rem;
       }
     }
+
+    /* Performance: Skip rendering hidden content */
+    .binary,
+    .images,
+    .capacity-bar,
+    .decode-capacity-bar,
+    .binary-decode,
+    .decode {
+      content-visibility: auto;
+      contain-intrinsic-size: 0 500px;
+    }
   </style>
 
   <script>
