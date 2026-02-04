@@ -56,6 +56,90 @@ const DOM_CACHE = {
   }
 };
 
+// Download cache (precomputed PNG blobs)
+const DOWNLOAD_CACHE = {
+  original: null,
+  normalized: null,
+  encoded: null,
+  building: {
+    original: false,
+    normalized: false,
+    encoded: false
+  }
+};
+
+function isDownloadReady(type) {
+  if (!type) return false;
+  return Boolean(DOWNLOAD_CACHE[type] && !DOWNLOAD_CACHE.building[type]);
+}
+
+function updateDownloadAvailability() {
+  var downloadEncodedBtn = document.getElementById('downloadEncoded');
+  if (downloadEncodedBtn) {
+    downloadEncodedBtn.disabled = !isDownloadReady('encoded');
+  }
+  
+  if (comparisonModal && comparisonModal.downloadLeft && comparisonModal.downloadRight) {
+    var leftType = comparisonModal.currentComparison?.left;
+    var rightType = comparisonModal.currentComparison?.right;
+    comparisonModal.downloadLeft.disabled = !isDownloadReady(leftType);
+    comparisonModal.downloadRight.disabled = !isDownloadReady(rightType);
+  }
+}
+
+function clearDownloadCache(type) {
+  if (DOWNLOAD_CACHE[type] && DOWNLOAD_CACHE[type].objectUrl) {
+    URL.revokeObjectURL(DOWNLOAD_CACHE[type].objectUrl);
+  }
+  DOWNLOAD_CACHE[type] = null;
+  DOWNLOAD_CACHE.building[type] = false;
+}
+
+function clearAllDownloadCache() {
+  ['original', 'normalized', 'encoded'].forEach(type => clearDownloadCache(type));
+  updateDownloadAvailability();
+}
+
+function clearEncodedCaches() {
+  ['normalized', 'encoded'].forEach(type => clearDownloadCache(type));
+  updateDownloadAvailability();
+}
+
+function setDownloadCache(type, blob, width, height) {
+  clearDownloadCache(type);
+  DOWNLOAD_CACHE[type] = {
+    blob: blob,
+    objectUrl: URL.createObjectURL(blob),
+    width: width,
+    height: height,
+    createdAt: Date.now()
+  };
+  DOWNLOAD_CACHE.building[type] = false;
+  updateDownloadAvailability();
+}
+
+function buildDownloadCache(type, canvas) {
+  if (!canvas) {
+    clearDownloadCache(type);
+    showError('Download image is not available yet. Please try again after encoding.');
+    updateDownloadAvailability();
+    return;
+  }
+  
+  DOWNLOAD_CACHE.building[type] = true;
+  updateDownloadAvailability();
+  
+  canvas.toBlob(function(blob) {
+    if (!blob) {
+      clearDownloadCache(type);
+      showError('Failed to prepare downloadable image. Please try again.');
+      updateDownloadAvailability();
+      return;
+    }
+    setDownloadCache(type, blob, canvas.width, canvas.height);
+  }, 'image/png');
+}
+
 // Validation Functions
 function validateFileType(file) {
   if (!file) {
@@ -225,6 +309,7 @@ function initComparisonModal() {
     comparisonModal.labelRight.textContent = comparisonModal.comparisonLabels[rightType];
     comparisonModal.downloadLeftName.textContent = comparisonModal.comparisonLabels[leftType];
     comparisonModal.downloadRightName.textContent = comparisonModal.comparisonLabels[rightType];
+    updateDownloadAvailability();
     
     // Reset slider to 50%
     updateSliderPosition(50);
@@ -338,33 +423,29 @@ function initComparisonModal() {
   });
   
   // Download functions
-  function downloadCanvas(canvas, filename) {
-    canvas.toBlob(function(blob) {
-      var url = URL.createObjectURL(blob);
-      var link = document.createElement('a');
-      var timestamp = new Date().getTime();
-      link.download = 'steganography-' + filename + '-' + timestamp + '.png';
-      link.href = url;
-      link.click();
-      URL.revokeObjectURL(url);
-    }, 'image/png');
+  function downloadCachedImage(type) {
+    if (!isDownloadReady(type)) {
+      showError('Download is not ready yet. Please wait for encoding to finish.');
+      return;
+    }
+    
+    var entry = DOWNLOAD_CACHE[type];
+    var link = document.createElement('a');
+    var timestamp = new Date().getTime();
+    link.download = 'steganography-' + type + '-' + timestamp + '.png';
+    link.href = entry.objectUrl;
+    link.click();
   }
   
-  // Make downloadCanvas globally accessible
-  window.downloadCanvasImage = downloadCanvas;
+  // Make downloadCachedImage globally accessible
+  window.downloadCanvasImage = downloadCachedImage;
   
   comparisonModal.downloadLeft.addEventListener('click', function() {
-    var sourceCanvas = comparisonModal.canvasSources[comparisonModal.currentComparison.left]();
-    if (sourceCanvas) {
-      downloadCanvas(sourceCanvas, comparisonModal.currentComparison.left);
-    }
+    downloadCachedImage(comparisonModal.currentComparison.left);
   });
   
   comparisonModal.downloadRight.addEventListener('click', function() {
-    var sourceCanvas = comparisonModal.canvasSources[comparisonModal.currentComparison.right]();
-    if (sourceCanvas) {
-      downloadCanvas(sourceCanvas, comparisonModal.currentComparison.right);
-    }
+    downloadCachedImage(comparisonModal.currentComparison.right);
   });
 }
 
@@ -405,6 +486,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var messageTextarea = DOM_CACHE.get('messageTextarea');
   if (messageTextarea) {
     messageTextarea.addEventListener('input', function() {
+      clearEncodedCaches();
       updateMessageAnalysis(this.value);
     });
   }
@@ -418,6 +500,7 @@ document.addEventListener('DOMContentLoaded', function() {
     overrideBtn.addEventListener('click', function() {
       document.getElementById('capacity-analysis').style.display = 'none';
       document.getElementById('manual-mode-override').style.display = 'block';
+      clearEncodedCaches();
       // Trigger recalculation with manual mode
       var text = DOM_CACHE.get('messageTextarea')?.value || '';
       if (text) {
@@ -430,6 +513,7 @@ document.addEventListener('DOMContentLoaded', function() {
     autoBtn.addEventListener('click', function() {
       document.getElementById('manual-mode-override').style.display = 'none';
       document.getElementById('capacity-analysis').style.display = 'block';
+      clearEncodedCaches();
       // Trigger recalculation with auto mode
       var text = DOM_CACHE.get('messageTextarea')?.value || '';
       if (text) {
@@ -440,6 +524,7 @@ document.addEventListener('DOMContentLoaded', function() {
   
   if (manualSelect) {
     manualSelect.addEventListener('change', function() {
+      clearEncodedCaches();
       // Recalculate with manual mode
       var text = DOM_CACHE.get('messageTextarea')?.value || '';
       if (text) {
@@ -544,10 +629,7 @@ document.addEventListener('DOMContentLoaded', function() {
   if (downloadEncodedBtn) {
     downloadEncodedBtn.addEventListener('click', function(e) {
       e.stopPropagation(); // Prevent card click
-      var encodedCanvas = comparisonModal.canvasSources['encoded']();
-      if (encodedCanvas) {
-        window.downloadCanvasImage(encodedCanvas, 'encoded');
-      }
+      window.downloadCanvasImage('encoded');
     });
   }
   
@@ -569,6 +651,8 @@ document.addEventListener('DOMContentLoaded', function() {
       }
     });
   }
+  
+  updateDownloadAvailability();
 });
 
 function previewDecodeImage() {
@@ -887,6 +971,8 @@ function detectLsbMode() {
 function previewEncodeImage() {
   var file = document.querySelector("input[name=baseFile]").files[0];
   
+  clearAllDownloadCache();
+  
   if (!validateFileType(file)) {
     return;
   }
@@ -905,6 +991,8 @@ function previewEncodeImage() {
       if (!validateImageDimensions(canvas.width, canvas.height)) {
         return;
       }
+      
+      buildDownloadCache('original', canvas);
       
       // Default to 1-LSB for initial display
       var lsbBits = 1;
@@ -1039,6 +1127,8 @@ function encodeMessage() {
   if (encodeButton) {
     encodeButton.disabled = true;
   }
+  
+  clearEncodedCaches();
   
   var errorElement = DOM_CACHE.get('errorElement');
   if (errorElement) errorElement.style.display = 'none';
@@ -1198,6 +1288,9 @@ function encodeMessage() {
       if (messageCounter >= messageBinary.length) break;
     }
     messageContext.putImageData(message, 0, 0);
+    
+    buildDownloadCache('normalized', nulledCanvas);
+    buildDownloadCache('encoded', messageCanvas);
 
     // Display capacity utilization
     var utilizationPercent = Math.round((messageBytes.length / maxCapacity) * 100);
