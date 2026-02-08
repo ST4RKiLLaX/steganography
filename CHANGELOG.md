@@ -470,6 +470,33 @@ HEADER_VERSION (v2)
 
 ---
 
+### H. UI & Performance Refinements (February 2026)
+
+**Inline Preview Architecture**
+- **Change:** Upload previews now appear directly inside the drop-zone area
+- **Reason:** Improves UX by showing the image where the user interacts
+- **Impact:** Replaces static "Drag & Drop" text with actual image preview
+- **Implementation:** Reuses `previewImage` logic to render into a dedicated drop-zone canvas
+
+**Encoded Preview & Comparison**
+- **Change:** New "Encoded" section appears below binary output after encoding
+- **Feature:** Includes inline "Original / Encoded" toggle for instant comparison
+- **Removed:** Fullscreen comparison modal and slider (simplified UX)
+- **Benefit:** Keeps context within the main flow; no context switching to modals
+
+**Memory Optimization**
+- **Change:** Normalized buffer is cleared immediately after encoding
+- **Change:** Removed redundant "Normalized" preview canvas from memory
+- **Impact:** Reduces memory usage by ~25-50% for large images (e.g., 10k x 10k)
+- **Technical:** `nulledCanvas` width/height reset to 0 post-encode
+
+**Download Optimization**
+- **Change:** Downloads use pre-computed blob cache
+- **Fix:** Download button no longer triggers re-encoding on click
+- **Benefit:** Instant save prompt (browser/OS dependent)
+
+---
+
 **Document Version:** 2.0  
 **Date:** January 2026  
 **Status:** Final

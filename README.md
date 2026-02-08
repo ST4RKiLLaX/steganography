@@ -91,9 +91,10 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 - Color-coded progress bar (green → yellow → orange → red)
 - Dark/light mode toggle with localStorage persistence
 - Modern Bootstrap 5.3 card-based layout
-- Interactive fullscreen image comparison slider
-- Direct download buttons (no more right-click instructions)
-- Drag-and-drop file upload support
+- **Inline Preview Architecture**: Upload previews appear directly in drop zones
+- **Encoded Preview Section**: Dedicated result area with inline Original/Encoded toggle
+- **Direct download buttons**: No more right-click instructions
+- **Drag-and-drop file upload support**: Integrated into preview areas
 - Responsive mobile-optimized design
 - Educational modal explaining LSB steganography (v3 two-layer architecture)
 
@@ -101,7 +102,8 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 - TextEncoder/TextDecoder for proper Unicode handling
 - Optimized binary string construction
 - Canvas context optimization (willReadFrequently)
-- 60fps slider animations with CSS clip-path
+- **Memory Optimization**: Immediate release of intermediate buffers (reduced RAM usage)
+- **Download Optimization**: Pre-computed blob caching for instant save prompts
 
 **Accessibility:**
 - Keyboard navigation support
