@@ -59,11 +59,9 @@ const DOM_CACHE = {
 // Download cache (precomputed PNG blobs)
 const DOWNLOAD_CACHE = {
   original: null,
-  normalized: null,
   encoded: null,
   building: {
     original: false,
-    normalized: false,
     encoded: false
   }
 };
@@ -78,13 +76,127 @@ function updateDownloadAvailability() {
   if (downloadEncodedBtn) {
     downloadEncodedBtn.disabled = !isDownloadReady('encoded');
   }
+}
+
+function toggleEncodeDropZonePreview(showPreview) {
+  var dropZone = document.getElementById('encodeDropZone');
+  if (!dropZone) return;
   
-  if (comparisonModal && comparisonModal.downloadLeft && comparisonModal.downloadRight) {
-    var leftType = comparisonModal.currentComparison?.left;
-    var rightType = comparisonModal.currentComparison?.right;
-    comparisonModal.downloadLeft.disabled = !isDownloadReady(leftType);
-    comparisonModal.downloadRight.disabled = !isDownloadReady(rightType);
+  var content = dropZone.querySelector('.drop-zone-content');
+  var preview = dropZone.querySelector('.drop-zone-preview');
+  
+  if (content) {
+    content.style.display = showPreview ? 'none' : 'block';
   }
+  if (preview) {
+    preview.style.display = showPreview ? 'block' : 'none';
+  }
+}
+
+function renderEncodeDropZonePreview(source) {
+  var dropZone = document.getElementById('encodeDropZone');
+  if (!dropZone || !source) return;
+  
+  var previewCanvas = dropZone.querySelector('.drop-zone-preview canvas');
+  if (!previewCanvas) return;
+  
+  var sourceWidth = source.naturalWidth || source.width;
+  var sourceHeight = source.naturalHeight || source.height;
+  if (!sourceWidth || !sourceHeight) return;
+  
+  previewCanvas.width = sourceWidth;
+  previewCanvas.height = sourceHeight;
+  
+  var ctx = previewCanvas.getContext('2d', { desynchronized: true });
+  ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+  ctx.drawImage(source, 0, 0);
+  
+  toggleEncodeDropZonePreview(true);
+}
+
+function setEncodedPreviewVisibility(showPreview) {
+  var section = document.getElementById('encodedPreviewSection');
+  if (section) {
+    section.style.display = showPreview ? 'block' : 'none';
+  }
+}
+
+function renderPreviewCanvas(sourceCanvas, targetCanvas) {
+  // #region agent log
+  fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H2',location:'script.js:renderPreviewCanvas',message:'render called',data:{sourceWidth:sourceCanvas?.width,sourceHeight:sourceCanvas?.height,targetWidth:targetCanvas?.width,targetHeight:targetCanvas?.height},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+  if (!sourceCanvas || !targetCanvas) {
+    throw new Error('Preview source or target missing.');
+  }
+  
+  targetCanvas.width = sourceCanvas.width;
+  targetCanvas.height = sourceCanvas.height;
+  
+  var ctx = targetCanvas.getContext('2d', { desynchronized: true });
+  ctx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
+  ctx.drawImage(sourceCanvas, 0, 0);
+}
+
+function setEncodedPreviewMode(mode) {
+  // #region agent log
+  fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H1',location:'script.js:setEncodedPreviewMode',message:'set mode called',data:{mode:mode},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+  try {
+    var previewCanvas = document.getElementById('encodedPreviewCanvas');
+    var originalCanvas = DOM_CACHE.get('originalCanvas');
+    var encodedCanvas = DOM_CACHE.get('messageCanvas');
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H1',location:'script.js:setEncodedPreviewMode',message:'canvas check',data:{hasPreview:!!previewCanvas,hasOriginal:!!originalCanvas,hasEncoded:!!encodedCanvas},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+
+    if (mode === 'original') {
+      renderPreviewCanvas(originalCanvas, previewCanvas);
+    } else {
+      renderPreviewCanvas(encodedCanvas, previewCanvas);
+    }
+  } catch (error) {
+    // #region agent log
+    fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H1',location:'script.js:setEncodedPreviewMode',message:'error',data:{error:error.message},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    showError('Error updating encoded preview: ' + error.message);
+  }
+}
+
+function toggleDecodeDropZonePreview(showPreview) {
+  var dropZone = document.getElementById('decodeDropZone');
+  if (!dropZone) return;
+  
+  var content = dropZone.querySelector('.drop-zone-content');
+  var preview = dropZone.querySelector('.drop-zone-preview');
+  
+  if (content) {
+    content.style.display = showPreview ? 'none' : 'block';
+  }
+  if (preview) {
+    preview.style.display = showPreview ? 'block' : 'none';
+  }
+}
+
+function renderDecodeDropZonePreview(source) {
+  var dropZone = document.getElementById('decodeDropZone');
+  if (!dropZone || !source) return;
+  
+  var previewCanvas = dropZone.querySelector('.drop-zone-preview canvas');
+  if (!previewCanvas) return;
+  
+  var sourceWidth = source.naturalWidth || source.width;
+  var sourceHeight = source.naturalHeight || source.height;
+  if (!sourceWidth || !sourceHeight) return;
+  
+  previewCanvas.width = sourceWidth;
+  previewCanvas.height = sourceHeight;
+  
+  var ctx = previewCanvas.getContext('2d', { desynchronized: true });
+  ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+  ctx.drawImage(source, 0, 0);
+  
+  toggleDecodeDropZonePreview(true);
 }
 
 function clearDownloadCache(type) {
@@ -96,13 +208,14 @@ function clearDownloadCache(type) {
 }
 
 function clearAllDownloadCache() {
-  ['original', 'normalized', 'encoded'].forEach(type => clearDownloadCache(type));
+  ['original', 'encoded'].forEach(type => clearDownloadCache(type));
   updateDownloadAvailability();
 }
 
 function clearEncodedCaches() {
-  ['normalized', 'encoded'].forEach(type => clearDownloadCache(type));
+  ['encoded'].forEach(type => clearDownloadCache(type));
   updateDownloadAvailability();
+  setEncodedPreviewVisibility(false);
 }
 
 function setDownloadCache(type, blob, width, height) {
@@ -213,244 +326,22 @@ function showError(message, context) {
   // Users can manually scroll past or will be cleared on next encode/decode
 }
 
-// Image Comparison Modal
-var comparisonModal = {
-  modal: null,
-  bsModal: null,
-  comparisonType: null,
-  leftCanvas: null,
-  rightCanvas: null,
-  slider: null,
-  handle: null,
-  container: null,
-  labelLeft: null,
-  labelRight: null,
-  downloadLeft: null,
-  downloadRight: null,
-  downloadLeftName: null,
-  downloadRightName: null,
-  isDragging: false,
-  rafId: null,
-  currentComparison: {left: null, right: null},
-  
-  canvasSources: {
-    'original': function() { return DOM_CACHE.get('originalCanvas'); },
-    'normalized': function() { return DOM_CACHE.get('nulledCanvas'); },
-    'encoded': function() { return DOM_CACHE.get('messageCanvas'); }
-  },
-  
-  comparisonLabels: {
-    'original': 'Original',
-    'normalized': 'Normalized',
-    'encoded': 'Encoded'
-  }
-};
-
-function initComparisonModal() {
-  // Get DOM references
-  comparisonModal.modal = document.getElementById('comparisonModal');
-  comparisonModal.comparisonType = document.getElementById('comparison-type');
-  comparisonModal.leftCanvas = document.getElementById('comparison-left');
-  comparisonModal.rightCanvas = document.getElementById('comparison-right');
-  comparisonModal.slider = document.getElementById('comparisonSlider');
-  comparisonModal.handle = document.getElementById('sliderHandle');
-  comparisonModal.container = document.getElementById('comparisonContainer');
-  comparisonModal.labelLeft = document.getElementById('labelLeft');
-  comparisonModal.labelRight = document.getElementById('labelRight');
-  comparisonModal.downloadLeft = document.getElementById('downloadLeft');
-  comparisonModal.downloadRight = document.getElementById('downloadRight');
-  comparisonModal.downloadLeftName = document.getElementById('downloadLeftName');
-  comparisonModal.downloadRightName = document.getElementById('downloadRightName');
-  
-  // Clone canvas to modal canvas
-  function cloneCanvas(source, target) {
-    if (!source || !target) return;
-    target.width = source.width;
-    target.height = source.height;
-    var ctx = target.getContext('2d', { desynchronized: true });
-    ctx.drawImage(source, 0, 0);
-    
-    // Calculate display size to fit within viewport while maintaining aspect ratio
-    var aspectRatio = source.height / source.width;
-    var maxWidth = window.innerWidth * 0.9;
-    var maxHeight = window.innerHeight * 0.8;
-    
-    var displayWidth = Math.min(source.width, maxWidth);
-    var displayHeight = displayWidth * aspectRatio;
-    
-    // If height exceeds max, scale down based on height instead
-    if (displayHeight > maxHeight) {
-      displayHeight = maxHeight;
-      displayWidth = displayHeight / aspectRatio;
-    }
-    
-    // Set container to exact display size so slider matches image edges
-    comparisonModal.container.style.width = Math.round(displayWidth) + 'px';
-    comparisonModal.container.style.height = Math.round(displayHeight) + 'px';
+function downloadCachedImage(type) {
+  if (!isDownloadReady(type)) {
+    showError('Download is not ready yet. Please wait for encoding to finish.');
+    return;
   }
   
-  // Open comparison modal
-  function openComparison(leftType, rightType) {
-    var leftSource = comparisonModal.canvasSources[leftType]();
-    var rightSource = comparisonModal.canvasSources[rightType]();
-    
-    if (!leftSource || !rightSource) return;
-    
-    comparisonModal.currentComparison = {left: leftType, right: rightType};
-    
-    // Clone canvases
-    cloneCanvas(leftSource, comparisonModal.leftCanvas);
-    cloneCanvas(rightSource, comparisonModal.rightCanvas);
-    
-    // Update UI
-    var comparisonValue = leftType + '-' + rightType;
-    comparisonModal.comparisonType.value = comparisonValue;
-    comparisonModal.labelLeft.textContent = comparisonModal.comparisonLabels[leftType];
-    comparisonModal.labelRight.textContent = comparisonModal.comparisonLabels[rightType];
-    comparisonModal.downloadLeftName.textContent = comparisonModal.comparisonLabels[leftType];
-    comparisonModal.downloadRightName.textContent = comparisonModal.comparisonLabels[rightType];
-    updateDownloadAvailability();
-    
-    // Reset slider to 50%
-    updateSliderPosition(50);
-    
-    // Show modal (create instance if needed)
-    if (!comparisonModal.bsModal) {
-      comparisonModal.bsModal = new bootstrap.Modal(comparisonModal.modal);
-    }
-    comparisonModal.bsModal.show();
-  }
-  
-  // Make openComparison globally accessible for card click handlers
-  window.openComparison = openComparison;
-  
-  // Update slider position
-  function updateSliderPosition(percentage) {
-    percentage = Math.max(0, Math.min(100, percentage));
-    comparisonModal.slider.style.left = percentage + '%';
-    comparisonModal.rightCanvas.style.clipPath = 'inset(0 0 0 ' + percentage + '%)';
-    comparisonModal.handle.setAttribute('aria-valuenow', Math.round(percentage));
-  }
-  
-  // Slider drag handlers
-  function startDrag(e) {
-    comparisonModal.isDragging = true;
-    e.preventDefault();
-  }
-  
-  function drag(e) {
-    if (!comparisonModal.isDragging) return;
-    
-    // Throttle with requestAnimationFrame (60fps max)
-    if (comparisonModal.rafId) return;
-    
-    comparisonModal.rafId = requestAnimationFrame(() => {
-      var rect = comparisonModal.container.getBoundingClientRect();
-      var clientX;
-      
-      if (e.type.includes('touch')) {
-        clientX = e.touches[0].clientX;
-      } else {
-        clientX = e.clientX;
-      }
-      
-      var x = clientX - rect.left;
-      var percentage = (x / rect.width) * 100;
-      updateSliderPosition(percentage);
-      
-      comparisonModal.rafId = null;
-    });
-  }
-  
-  function stopDrag() {
-    comparisonModal.isDragging = false;
-    if (comparisonModal.rafId) {
-      cancelAnimationFrame(comparisonModal.rafId);
-      comparisonModal.rafId = null;
-    }
-  }
-  
-  // Mouse events
-  comparisonModal.handle.addEventListener('mousedown', startDrag);
-  document.addEventListener('mousemove', drag);
-  document.addEventListener('mouseup', stopDrag);
-  
-  // Touch events
-  comparisonModal.handle.addEventListener('touchstart', startDrag, {passive: false});
-  document.addEventListener('touchmove', drag, {passive: false});
-  document.addEventListener('touchend', stopDrag);
-  
-  // Click to jump
-  comparisonModal.container.addEventListener('click', function(e) {
-    if (e.target === comparisonModal.handle || e.target.parentElement === comparisonModal.handle) return;
-    var rect = comparisonModal.container.getBoundingClientRect();
-    var x = e.clientX - rect.left;
-    var percentage = (x / rect.width) * 100;
-    updateSliderPosition(percentage);
-  });
-  
-  // Keyboard navigation
-  comparisonModal.handle.addEventListener('keydown', function(e) {
-    var current = parseFloat(comparisonModal.slider.style.left) || 50;
-    var newValue = current;
-    
-    switch(e.key) {
-      case 'ArrowLeft':
-        newValue = current - 5;
-        e.preventDefault();
-        break;
-      case 'ArrowRight':
-        newValue = current + 5;
-        e.preventDefault();
-        break;
-      case 'Home':
-        newValue = 0;
-        e.preventDefault();
-        break;
-      case 'End':
-        newValue = 100;
-        e.preventDefault();
-        break;
-    }
-    
-    updateSliderPosition(newValue);
-  });
-  
-  // Comparison type change
-  comparisonModal.comparisonType.addEventListener('change', function() {
-    var parts = this.value.split('-');
-    openComparison(parts[0], parts[1]);
-  });
-  
-  // Download functions
-  function downloadCachedImage(type) {
-    if (!isDownloadReady(type)) {
-      showError('Download is not ready yet. Please wait for encoding to finish.');
-      return;
-    }
-    
-    var entry = DOWNLOAD_CACHE[type];
-    var link = document.createElement('a');
-    var timestamp = new Date().getTime();
-    link.download = 'steganography-' + type + '-' + timestamp + '.png';
-    link.href = entry.objectUrl;
-    link.click();
-  }
-  
-  // Make downloadCachedImage globally accessible
-  window.downloadCanvasImage = downloadCachedImage;
-  
-  comparisonModal.downloadLeft.addEventListener('click', function() {
-    downloadCachedImage(comparisonModal.currentComparison.left);
-  });
-  
-  comparisonModal.downloadRight.addEventListener('click', function() {
-    downloadCachedImage(comparisonModal.currentComparison.right);
-  });
+  var entry = DOWNLOAD_CACHE[type];
+  var link = document.createElement('a');
+  var timestamp = new Date().getTime();
+  link.download = 'steganography-' + type + '-' + timestamp + '.png';
+  link.href = entry.objectUrl;
+  link.click();
 }
 
-// Initialize comparison modal when script loads
-initComparisonModal();
+// Make downloadCachedImage globally accessible
+window.downloadCanvasImage = downloadCachedImage;
 
 // Event listeners setup
 document.addEventListener('DOMContentLoaded', function() {
@@ -591,45 +482,28 @@ document.addEventListener('DOMContentLoaded', function() {
     setupDragAndDrop(decodeDropZone, decodeFileInput);
   }
   
-  // Image Comparison Modal - Card click handlers
-  var originalCard = document.querySelector('.original .card');
-  var nulledCard = document.querySelector('.nulled .card');
-  var messageCard = document.querySelector('.message .card');
   var downloadEncodedBtn = document.getElementById('downloadEncoded');
-  
-  if (originalCard) {
-    originalCard.addEventListener('click', function() {
-      if (comparisonModal.canvasSources['encoded']()) {
-        window.openComparison('original', 'encoded');
-      }
-    });
-  }
-  
-  if (nulledCard) {
-    nulledCard.addEventListener('click', function() {
-      if (comparisonModal.canvasSources['normalized']()) {
-        window.openComparison('original', 'normalized');
-      }
-    });
-  }
-  
-  if (messageCard) {
-    messageCard.addEventListener('click', function(e) {
-      // Don't open modal if download button was clicked
-      if (e.target.closest('#downloadEncoded')) {
-        return;
-      }
-      if (comparisonModal.canvasSources['encoded']()) {
-        window.openComparison('normalized', 'encoded');
-      }
-    });
-  }
-  
-  // Download encoded image button
   if (downloadEncodedBtn) {
     downloadEncodedBtn.addEventListener('click', function(e) {
-      e.stopPropagation(); // Prevent card click
+      e.stopPropagation();
       window.downloadCanvasImage('encoded');
+    });
+  }
+
+  var toggleEncoded = document.getElementById('previewToggleEncoded');
+  var toggleOriginal = document.getElementById('previewToggleOriginal');
+  if (toggleEncoded) {
+    toggleEncoded.addEventListener('change', function() {
+      if (this.checked) {
+        setEncodedPreviewMode('encoded');
+      }
+    });
+  }
+  if (toggleOriginal) {
+    toggleOriginal.addEventListener('change', function() {
+      if (this.checked) {
+        setEncodedPreviewMode('original');
+      }
     });
   }
   
@@ -658,12 +532,18 @@ document.addEventListener('DOMContentLoaded', function() {
 function previewDecodeImage() {
   var file = document.querySelector('input[name=decodeFile]').files[0];
   
+  toggleDecodeDropZonePreview(false);
+  
   if (!validateFileType(file)) {
     return;
   }
 
-  previewImage(file, ".decode canvas", function() {
-    document.querySelector(".decode").style.display = 'block';
+  previewImage(file, ".decode canvas", function(image) {
+    try {
+      renderDecodeDropZonePreview(image);
+    } catch (error) {
+      showError('Error processing decode image: ' + error.message, 'decode');
+    }
     
     // Detect LSB mode from uploaded image
     detectLsbMode();
@@ -972,42 +852,44 @@ function previewEncodeImage() {
   var file = document.querySelector("input[name=baseFile]").files[0];
   
   clearAllDownloadCache();
+  toggleEncodeDropZonePreview(false);
+  setEncodedPreviewVisibility(false);
+  var toggleEncoded = document.getElementById('previewToggleEncoded');
+  if (toggleEncoded) {
+    toggleEncoded.checked = true;
+  }
   
   if (!validateFileType(file)) {
     return;
   }
 
-  document.querySelector(".images .nulled").style.display = 'none';
-  document.querySelector(".images .message").style.display = 'none';
-  document.querySelector(".capacity-bar").style.display = 'none';
   var errorElement = DOM_CACHE.get('errorElement');
   if (errorElement) errorElement.style.display = 'none';
 
-  previewImage(file, ".original canvas", function() {
+  previewImage(file, ".original canvas", function(image, canvas) {
     try {
-      var canvas = DOM_CACHE.get('originalCanvas');
+      var domCanvas = DOM_CACHE.get('originalCanvas');
       
       // Validate dimensions
-      if (!validateImageDimensions(canvas.width, canvas.height)) {
+      if (!validateImageDimensions(domCanvas.width, domCanvas.height)) {
+        toggleEncodeDropZonePreview(false);
         return;
       }
       
-      buildDownloadCache('original', canvas);
+      buildDownloadCache('original', domCanvas);
+      renderEncodeDropZonePreview(image);
       
       // Default to 1-LSB for initial display
       var lsbBits = 1;
       
       // Calculate capacity based on v3 format
-      var availablePixels = (canvas.width * canvas.height) - SENTINEL_PIXELS;
+      var availablePixels = (domCanvas.width * domCanvas.height) - SENTINEL_PIXELS;
       var totalBits = availablePixels * lsbBits * 3;
       var capacity = Math.floor(totalBits / 8);
       
       if (!validateCapacity(capacity)) {
         return;
       }
-      
-      document.querySelector(".images .original").style.display = 'block';
-      document.querySelector(".images").style.display = 'block';
       
       // Show capacity badge
       var capacityBadge = document.getElementById('capacity-badge');
@@ -1017,7 +899,7 @@ function previewEncodeImage() {
       }
       
       // Update modal with current image data
-      updateModalWithImageData(canvas.width, canvas.height, capacity, lsbBits);
+      updateModalWithImageData(domCanvas.width, domCanvas.height, capacity, lsbBits);
       
       // Trigger message analysis if there's text in the textarea
       var messageText = DOM_CACHE.get('messageTextarea')?.value || '';
@@ -1025,6 +907,7 @@ function previewEncodeImage() {
         updateMessageAnalysis(messageText);
       }
     } catch (error) {
+      toggleEncodeDropZonePreview(false);
       showError('Error processing image: ' + error.message);
     }
   });
@@ -1115,7 +998,7 @@ function previewImage(file, canvasSelector, callback) {
       // Clean up object URL to prevent memory leak
       URL.revokeObjectURL(image.src);
 
-      callback();
+      callback(image, canvas);
     }
   }
 }
@@ -1133,7 +1016,6 @@ function encodeMessage() {
   var errorElement = DOM_CACHE.get('errorElement');
   if (errorElement) errorElement.style.display = 'none';
   document.querySelector(".binary").style.display = 'none';
-  document.querySelector(".capacity-bar").style.display = 'none';
 
   try {
     var text = DOM_CACHE.get('messageTextarea')?.value || '';
@@ -1289,34 +1171,23 @@ function encodeMessage() {
     }
     messageContext.putImageData(message, 0, 0);
     
-    buildDownloadCache('normalized', nulledCanvas);
     buildDownloadCache('encoded', messageCanvas);
-
-    // Display capacity utilization
-    var utilizationPercent = Math.round((messageBytes.length / maxCapacity) * 100);
-    var progressBar = document.getElementById('capacity-progress');
-    var capacityText = document.getElementById('capacity-text');
-    var capacityDetails = document.getElementById('capacity-details');
     
-    // Set progress bar color based on utilization
-    progressBar.className = 'progress-bar';
-    if (utilizationPercent < 30) {
-      progressBar.classList.add('bg-success');
-    } else if (utilizationPercent < 70) {
-      progressBar.classList.add('bg-warning');
-    } else {
-      progressBar.classList.add('bg-danger');
+    try {
+      setEncodedPreviewVisibility(true);
+      var toggleEncoded = document.getElementById('previewToggleEncoded');
+      if (toggleEncoded) {
+        toggleEncoded.checked = true;
+      }
+      setEncodedPreviewMode('encoded');
+    } catch (previewError) {
+      showError('Error rendering encoded preview: ' + previewError.message);
     }
     
-    progressBar.style.width = utilizationPercent + '%';
-    progressBar.setAttribute('aria-valuenow', utilizationPercent);
-    capacityText.textContent = utilizationPercent + '%';
-    capacityDetails.textContent = 'Hidden ' + messageBytes.length.toLocaleString() + ' bytes of ' + maxCapacity.toLocaleString() + ' available (' + lsbBits + '-LSB mode). ' + (maxCapacity - messageBytes.length).toLocaleString() + ' bytes remaining.';
-    
-    document.querySelector(".capacity-bar").style.display = 'block';
+    nulledCanvas.width = 0;
+    nulledCanvas.height = 0;
+
     document.querySelector(".binary").style.display = 'block';
-    document.querySelector(".images .nulled").style.display = 'block';
-    document.querySelector(".images .message").style.display = 'block';
     
   } catch (error) {
     showError('Error encoding message: ' + error.message);
