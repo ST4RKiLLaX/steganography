@@ -87,8 +87,8 @@
 
 **File Type Validation**
 - Original: No validation
-- New: Whitelist-based file type checking (PNG, JPEG, WebP only)
-- Risk Addressed: Malicious file upload attempts
+- New: Magic bytes (file signature) validation for PNG, JPEG, WebP; Image decode onerror handler
+- Risk Addressed: Spoofed MIME types (file.type unreliable); corrupted/invalid images now show clear error
 
 **File Size Validation**
 - Original: No limit
