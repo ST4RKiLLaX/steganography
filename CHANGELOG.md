@@ -213,6 +213,26 @@
 - Prevents: Users unaware of operation failures
 - Severity: Medium → None
 
+**Drag-and-Drop File Assignment**
+- Mitigated: Pass dropped file directly to preview logic; no longer assign to input.files
+- Prevents: UI state desync when browsers block programmatic file assignment (input.files is read-only)
+- Severity: Low → None
+
+**Object URL / Blob Retention**
+- Mitigated: Removed unused original cache; clear encoded cache when switching to Decode tab
+- Prevents: Memory pressure from retaining large blobs longer than needed
+- Severity: Low → None
+
+**Decode Parameter Trust**
+- Mitigated: Decode now reads lsbBits and messageLength from sentinel pixels, not DOM attributes
+- Prevents: Tampered DOM causing incorrect extraction or resource consumption
+- Severity: Low → None
+
+**UTF-8 Decode Integrity**
+- Mitigated: TextDecoder with fatal: true raises on invalid UTF-8 instead of replacing
+- Prevents: Corrupted/malicious payloads decoding silently with replacement chars
+- Severity: Low → None
+
 **Data Loss**
 - Mitigated: Proper validation before encoding
 - Prevents: Users creating unusable encoded images

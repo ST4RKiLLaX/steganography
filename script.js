@@ -22,7 +22,7 @@ const MAX_LSB_BITS = 4;                    // Maximum LSB mode
 
 // Performance: Reusable encoder/decoder (stateless)
 const TEXT_ENCODER = new TextEncoder();
-const TEXT_DECODER = new TextDecoder();
+const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 // Performance: DOM element cache
 const DOM_CACHE = {
@@ -63,12 +63,10 @@ const DOM_CACHE = {
   }
 };
 
-// Download cache (precomputed PNG blobs)
+// Download cache (precomputed PNG blobs) - encoded only (original blob unused)
 const DOWNLOAD_CACHE = {
-  original: null,
   encoded: null,
   building: {
-    original: false,
     encoded: false
   }
 };
@@ -202,7 +200,7 @@ function clearDownloadCache(type) {
 }
 
 function clearAllDownloadCache() {
-  ['original', 'encoded'].forEach(type => clearDownloadCache(type));
+  clearDownloadCache('encoded');
   updateDownloadAvailability();
 }
 
@@ -266,7 +264,14 @@ function checkFileSignature(buffer) {
   for (i = 0; i < FILE_SIGNATURES.webp.length; i++) {
     if (bytes[i] !== FILE_SIGNATURES.webp[i]) break;
   }
-  if (i === FILE_SIGNATURES.webp.length && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return true;
+  if (i === FILE_SIGNATURES.webp.length &&
+      bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    if (bytes.length < 16) return false;
+    var vp8  = bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x20;
+    var vp8l = bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x4C;
+    var vp8x = bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x58;
+    if (vp8 || vp8l || vp8x) return true;
+  }
 
   return false;
 }
@@ -296,7 +301,7 @@ function validateFileType(file, context, onValid) {
     showError('Could not read file. Please try again.', context);
     if (onValid) onValid(false);
   };
-  reader.readAsArrayBuffer(file.slice(0, 12));
+  reader.readAsArrayBuffer(file.slice(0, 16));
 }
 
 function validateImageDimensions(width, height) {
@@ -377,12 +382,12 @@ document.addEventListener('DOMContentLoaded', function() {
   // File input listeners
   var encodeFileInput = document.querySelector('input[name=baseFile]');
   if (encodeFileInput) {
-    encodeFileInput.addEventListener('change', previewEncodeImage);
+    encodeFileInput.addEventListener('change', function() { previewEncodeImage(); });
   }
-  
+
   var decodeFileInput = document.querySelector('input[name=decodeFile]');
   if (decodeFileInput) {
-    decodeFileInput.addEventListener('change', previewDecodeImage);
+    decodeFileInput.addEventListener('change', function() { previewDecodeImage(); });
   }
   
   // Button listeners
@@ -401,7 +406,16 @@ document.addEventListener('DOMContentLoaded', function() {
       decodeMessage();
     });
   }
-  
+
+  // Clear download cache when switching away from Encode tab (frees blob memory)
+  document.querySelectorAll('a[data-bs-toggle="tab"]').forEach(function(tab) {
+    tab.addEventListener('shown.bs.tab', function(e) {
+      if (e.target.getAttribute('href') === '#decode') {
+        clearEncodedCaches();
+      }
+    });
+  });
+
   // Message textarea - real-time character counter and auto LSB selection
   var messageTextarea = DOM_CACHE.get('messageTextarea');
   if (messageTextarea) {
@@ -454,61 +468,54 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   // Drag and Drop File Upload
-  function setupDragAndDrop(dropZone, fileInput) {
+  // Pass file directly to onDrop - input.files assignment is read-only in most browsers
+  function setupDragAndDrop(dropZone, fileInput, onDrop) {
     if (!dropZone || !fileInput) return;
-    
-    // Prevent browser default behavior
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-      dropZone.addEventListener(eventName, (e) => {
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(function(eventName) {
+      dropZone.addEventListener(eventName, function(e) {
         e.preventDefault();
         e.stopPropagation();
       });
     });
-    
-    // Visual feedback - add active state
-    ['dragenter', 'dragover'].forEach(eventName => {
-      dropZone.addEventListener(eventName, () => {
+
+    ['dragenter', 'dragover'].forEach(function(eventName) {
+      dropZone.addEventListener(eventName, function() {
         dropZone.classList.add('drag-active');
       });
     });
-    
-    // Visual feedback - remove active state
-    ['dragleave', 'drop'].forEach(eventName => {
-      dropZone.addEventListener(eventName, () => {
+
+    ['dragleave', 'drop'].forEach(function(eventName) {
+      dropZone.addEventListener(eventName, function() {
         dropZone.classList.remove('drag-active');
       });
     });
-    
-    // Handle file drop
-    dropZone.addEventListener('drop', (e) => {
-      const files = e.dataTransfer.files;
-      
-      // Validate we have files
-      if (files && files.length > 0) {
-        // Set to file input
-        fileInput.files = files;
-        
-        // Trigger existing change event
-        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+    dropZone.addEventListener('drop', function(e) {
+      var files = e.dataTransfer.files;
+      if (files && files.length > 0 && onDrop) {
+        onDrop(files[0]);
       }
     });
-    
-    // Make drop zone clickable
-    dropZone.addEventListener('click', () => {
+
+    dropZone.addEventListener('click', function() {
       fileInput.click();
     });
   }
-  
-  // Initialize both drop zones
-  const encodeDropZone = document.getElementById('encodeDropZone');
-  const decodeDropZone = document.getElementById('decodeDropZone');
-  
+
+  var encodeDropZone = document.getElementById('encodeDropZone');
+  var decodeDropZone = document.getElementById('decodeDropZone');
+
   if (encodeDropZone && encodeFileInput) {
-    setupDragAndDrop(encodeDropZone, encodeFileInput);
+    setupDragAndDrop(encodeDropZone, encodeFileInput, function(file) {
+      previewEncodeImage(file);
+    });
   }
-  
+
   if (decodeDropZone && decodeFileInput) {
-    setupDragAndDrop(decodeDropZone, decodeFileInput);
+    setupDragAndDrop(decodeDropZone, decodeFileInput, function(file) {
+      previewDecodeImage(file);
+    });
   }
   
   var downloadEncodedBtn = document.getElementById('downloadEncoded');
@@ -558,8 +565,10 @@ document.addEventListener('DOMContentLoaded', function() {
   updateDownloadAvailability();
 });
 
-function previewDecodeImage() {
-  var file = document.querySelector('input[name=decodeFile]').files[0];
+function previewDecodeImage(file) {
+  if (!file) {
+    file = document.querySelector('input[name=decodeFile]').files[0];
+  }
 
   toggleDecodeDropZonePreview(false);
 
@@ -815,40 +824,40 @@ function showCapacityError(messageBytes, imageWidth, imageHeight) {
   }
 }
 
+function parseSentinelFromPixels(pixel) {
+  var sentinelBitsArray = [];
+  for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelBitsArray.length < SENTINEL_BITS; i += 4) {
+    for (var offset = 0; offset < 3; offset++) {
+      sentinelBitsArray.push((pixel[i + offset] & 1).toString());
+      if (sentinelBitsArray.length >= SENTINEL_BITS) break;
+    }
+  }
+  var sentinelBits = sentinelBitsArray.join('');
+  var magic = sentinelBits.substring(0, 16);
+  var lsbBits = 1;
+  var messageLength = 0;
+  var isV3 = false;
+  if (magic === MAGIC_V3) {
+    lsbBits = parseInt(sentinelBits.substring(16, 20), 2);
+    messageLength = parseInt(sentinelBits.substring(24, 56), 2);
+    isV3 = true;
+  }
+  return { lsbBits: lsbBits, messageLength: messageLength, isV3: isV3 };
+}
+
 function detectLsbMode() {
   try {
     var canvas = DOM_CACHE.get('decodeCanvas');
     if (!canvas) return;
-    
+
     var ctx = canvas.getContext("2d", { willReadFrequently: true });
     var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    var pixel = imageData.data;
-    
-    // Always read sentinel in 1-LSB mode (first 19 pixels = 57 bits, we need 56)
-    var sentinelBitsArray = [];
-    for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelBitsArray.length < SENTINEL_BITS; i += 4) {
-      for (var offset = 0; offset < 3; offset++) {
-        sentinelBitsArray.push((pixel[i + offset] & 1).toString());
-        if (sentinelBitsArray.length >= SENTINEL_BITS) break;
-      }
-    }
-    var sentinelBits = sentinelBitsArray.join('');
-    
-    // Parse sentinel structure
-    var magic = sentinelBits.substring(0, 16);
-    var detectedMode = 1;
-    var messageLength = 0;
-    var isV3 = false;
-    
-    if (magic === MAGIC_V3) {
-      // v3 format detected!
-      detectedMode = parseInt(sentinelBits.substring(16, 20), 2);
-      // Reserved bits 20-23 (skip)
-      messageLength = parseInt(sentinelBits.substring(24, 56), 2);
-      isV3 = true;
-    }
-    
-    // Update UI
+    var parsed = parseSentinelFromPixels(imageData.data);
+    var detectedMode = parsed.lsbBits;
+    var messageLength = parsed.messageLength;
+    var isV3 = parsed.isV3;
+
+    // Update UI (display only - decode does not trust DOM)
     var detector = document.getElementById('decode-mode-detector');
     var modeText = document.getElementById('detected-mode-text');
     var modeIcon = document.getElementById('detected-mode-icon');
@@ -874,9 +883,11 @@ function detectLsbMode() {
   }
 }
 
-function previewEncodeImage() {
-  var file = document.querySelector("input[name=baseFile]").files[0];
-  
+function previewEncodeImage(file) {
+  if (!file) {
+    file = document.querySelector("input[name=baseFile]").files[0];
+  }
+
   clearAllDownloadCache();
   toggleEncodeDropZonePreview(false);
   setEncodedPreviewVisibility(false);
@@ -898,7 +909,6 @@ function previewEncodeImage() {
           toggleEncodeDropZonePreview(false);
           return;
         }
-        buildDownloadCache('original', domCanvas);
         renderEncodeDropZonePreview(image);
         var lsbBits = 1;
         var availablePixels = (domCanvas.width * domCanvas.height) - SENTINEL_PIXELS;
@@ -1241,19 +1251,12 @@ function decodeMessage() {
     var originalContext = originalCanvas.getContext("2d", { willReadFrequently: true });
     var original = originalContext.getImageData(0, 0, width, height);
     var pixel = original.data;
-    
-    // Get detected mode and message length from detector
-    var detector = document.getElementById('decode-mode-detector');
-    var lsbBits = 1;
-    var messageLength = 0;
-    var isV3 = false;
-    
-    if (detector) {
-      lsbBits = parseInt(detector.getAttribute('data-detected-mode') || 1);
-      messageLength = parseInt(detector.getAttribute('data-message-length') || 0);
-      isV3 = detector.getAttribute('data-is-v3') === 'true';
-    }
-    
+
+    var parsed = parseSentinelFromPixels(pixel);
+    var lsbBits = parsed.lsbBits;
+    var messageLength = parsed.messageLength;
+    var isV3 = parsed.isV3;
+
     if (!isV3) {
       showError('This image does not contain a valid v3 steganographic message. Please ensure the image was encoded with this tool.', 'decode');
       return;
@@ -1274,7 +1277,12 @@ function decodeMessage() {
     if (!validateMessageLength(messageLength)) {
       return;
     }
-    
+
+    if (!Number.isInteger(lsbBits) || lsbBits < MIN_LSB_BITS || lsbBits > MAX_LSB_BITS) {
+      showError('Invalid or corrupted steganographic image.', 'decode');
+      return;
+    }
+
     // Calculate maximum capacity based on LSB mode
     var availablePixels = (width * height) - SENTINEL_PIXELS;
     var maxCapacity = Math.floor((availablePixels * lsbBits * 3) / 8);
