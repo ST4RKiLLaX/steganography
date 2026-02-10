@@ -233,6 +233,16 @@
 - Prevents: Corrupted/malicious payloads decoding silently with replacement chars
 - Severity: Low → None
 
+**Capacity Validation**
+- Fixed: MAX_CAPACITY (100MB) caused false-fail for max-sized images (~150MB at 4-LSB)
+- Renamed to MAX_THEORETICAL_EMBED_CAPACITY_BYTES, increased to 150MB
+- Severity: Low → None
+
+**Encode Binary String DoS**
+- Mitigated: Embed directly from messageBytes via bit ops; binary display truncated to 4k-bit preview
+- Prevents: Giant messageBinary string causing browser freeze/crash on moderate-sized messages
+- Severity: Medium → None
+
 **Data Loss**
 - Mitigated: Proper validation before encoding
 - Prevents: Users creating unusable encoded images

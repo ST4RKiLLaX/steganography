@@ -1,7 +1,7 @@
 // Security Configuration
 const MAX_MESSAGE_LENGTH = 10000000;      // 10MB byte limit (UTF-8 encoded)
 const MAX_IMAGE_DIMENSION = 10000;         // 10,000 x 10,000 px max
-const MAX_CAPACITY = 100000000;            // 100MB absolute max
+const MAX_THEORETICAL_EMBED_CAPACITY_BYTES = 150000000;  // ~150MB, allows max 10k×10k at 4-LSB
 const MAX_FILE_SIZE = 52428800;            // 50MB file size limit
 const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
@@ -12,6 +12,9 @@ var FILE_SIGNATURES = {
   webp: [0x52, 0x49, 0x46, 0x46]  // RIFF at 0; WEBP at 8-11
 };
 
+// Binary display: truncate to avoid DoS from huge strings
+const BINARY_PREVIEW_BITS = 4096;
+
 // v3 Format - Fixed Sentinel + Variable Message
 const FORMAT_VERSION = 3;                  // Current format version
 const SENTINEL_BITS = 56;                  // Fixed 1-LSB sentinel (magic + mode + reserved + length)
@@ -19,6 +22,16 @@ const SENTINEL_PIXELS = 19;                // ceil(56 / 3) pixels needed for sen
 const MAGIC_V3 = '1010101001010101';       // 0xAA55 (16-bit magic number)
 const MIN_LSB_BITS = 1;                    // Minimum LSB mode
 const MAX_LSB_BITS = 4;                    // Maximum LSB mode
+
+// Bit extraction from bytes (avoids building giant binary strings)
+function getBit(bytes, bitIndex) {
+  return (bytes[bitIndex >> 3] >> (7 - (bitIndex & 7))) & 1;
+}
+function getBits(bytes, bitIndex, n) {
+  var result = 0;
+  for (var i = 0; i < n; i++) result = (result << 1) | getBit(bytes, bitIndex + i);
+  return result;
+}
 
 // Performance: Reusable encoder/decoder (stateless)
 const TEXT_ENCODER = new TextEncoder();
@@ -337,7 +350,7 @@ function validateCapacity(capacity) {
     showError('Image capacity calculation error.');
     return false;
   }
-  if (capacity > MAX_CAPACITY) {
+  if (capacity > MAX_THEORETICAL_EMBED_CAPACITY_BYTES) {
     showError('Image capacity exceeds safety limits.');
     return false;
   }
@@ -1139,24 +1152,21 @@ function encodeMessage() {
     var lengthBinary = messageBytes.length.toString(2).padStart(32, '0');  // 32 bits
     var sentinelBinary = magicBinary + modeBinary + reservedBinary + lengthBinary;
 
-    // Convert the UTF-8 bytes to a binary string
-    var messageBinaryArray = [];
-    for (var i = 0; i < messageBytes.length; i++) {
-      var binaryByte = messageBytes[i].toString(2).padStart(8, '0');
-      messageBinaryArray.push(binaryByte);
+    var totalMessageBits = messageBytes.length * 8;
+    var previewBits = Math.min(BINARY_PREVIEW_BITS, totalMessageBits);
+    var previewParts = [];
+    for (var p = 0; p < previewBits; p++) previewParts.push(getBit(messageBytes, p) ? '1' : '0');
+    var binaryPreview = sentinelBinary + previewParts.join('');
+    if (totalMessageBits > BINARY_PREVIEW_BITS) {
+      binaryPreview += ' ... truncated (' + totalMessageBits.toLocaleString() + ' bits total)';
     }
-    var messageBinary = messageBinaryArray.join('');
-    
-    var binaryMessage = sentinelBinary + messageBinary;
-    document.querySelector('.binary .card-body').textContent = binaryMessage;
+    document.querySelector('.binary .card-body').textContent = binaryPreview;
 
-    // Apply the binary string to the image
     var message = nulledContext.getImageData(0, 0, width, height);
     pixel = message.data;
     var sentinelCounter = 0;
     var messageCounter = 0;
-    
-    // Step 1: Embed sentinel using 1-LSB (first 19 pixels = 57 bits, we use 56)
+
     for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelCounter < SENTINEL_BITS; i += 4) {
       for (var offset = 0; offset < 3; offset++) {
         if (sentinelCounter < SENTINEL_BITS) {
@@ -1166,27 +1176,19 @@ function encodeMessage() {
         }
       }
     }
-    
-    // Step 2: Embed message data using N-LSB mode (starting from pixel 20)
+
     for (var i = SENTINEL_PIXELS * 4; i < pixel.length; i += 4) {
       for (var offset = 0; offset < 3; offset++) {
-        if (messageCounter + lsbBits <= messageBinary.length) {
-          // Extract N bits from message binary
-          var bits = parseInt(messageBinary.substring(messageCounter, messageCounter + lsbBits), 2);
-          pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
-          messageCounter += lsbBits;
-        } else if (messageCounter < messageBinary.length) {
-          // Handle remaining bits if message doesn't align perfectly
-          var remaining = messageBinary.substring(messageCounter);
-          var bits = parseInt(remaining.padEnd(lsbBits, '0'), 2);
-          pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
-          messageCounter = messageBinary.length;
-          break;
-        } else {
-          break;
-        }
+        if (messageCounter >= totalMessageBits) break;
+        var remaining = totalMessageBits - messageCounter;
+        var bits = remaining >= lsbBits
+          ? getBits(messageBytes, messageCounter, lsbBits)
+          : getBits(messageBytes, messageCounter, remaining);
+        pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
+        messageCounter += lsbBits;
+        if (messageCounter >= totalMessageBits) break;
       }
-      if (messageCounter >= messageBinary.length) break;
+      if (messageCounter >= totalMessageBits) break;
     }
     messageContext.putImageData(message, 0, 0);
     
