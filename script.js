@@ -122,9 +122,6 @@ function setEncodedPreviewVisibility(showPreview) {
 }
 
 function renderPreviewCanvas(sourceCanvas, targetCanvas) {
-  // #region agent log
-  fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H2',location:'script.js:renderPreviewCanvas',message:'render called',data:{sourceWidth:sourceCanvas?.width,sourceHeight:sourceCanvas?.height,targetWidth:targetCanvas?.width,targetHeight:targetCanvas?.height},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   if (!sourceCanvas || !targetCanvas) {
     throw new Error('Preview source or target missing.');
   }
@@ -138,17 +135,10 @@ function renderPreviewCanvas(sourceCanvas, targetCanvas) {
 }
 
 function setEncodedPreviewMode(mode) {
-  // #region agent log
-  fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H1',location:'script.js:setEncodedPreviewMode',message:'set mode called',data:{mode:mode},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   try {
     var previewCanvas = document.getElementById('encodedPreviewCanvas');
     var originalCanvas = DOM_CACHE.get('originalCanvas');
     var encodedCanvas = DOM_CACHE.get('messageCanvas');
-    
-    // #region agent log
-    fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H1',location:'script.js:setEncodedPreviewMode',message:'canvas check',data:{hasPreview:!!previewCanvas,hasOriginal:!!originalCanvas,hasEncoded:!!encodedCanvas},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
 
     if (mode === 'original') {
       renderPreviewCanvas(originalCanvas, previewCanvas);
@@ -156,9 +146,6 @@ function setEncodedPreviewMode(mode) {
       renderPreviewCanvas(encodedCanvas, previewCanvas);
     }
   } catch (error) {
-    // #region agent log
-    fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H1',location:'script.js:setEncodedPreviewMode',message:'error',data:{error:error.message},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     showError('Error updating encoded preview: ' + error.message);
   }
 }
