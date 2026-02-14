@@ -102,7 +102,9 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 - TextEncoder/TextDecoder for proper Unicode handling
 - Optimized binary string construction
 - Canvas context optimization (willReadFrequently)
-- **Memory Optimization**: Immediate release of intermediate buffers (reduced RAM usage)
+- **Worker Offload**: LSB encode/decode and PNG encoding run in Web Workers (keeps main thread responsive on large images)
+- **OffscreenCanvas**: PNG conversion via `convertToBlob` in Workers (Chrome/Firefox friendly)
+- **Memory Optimization**: Immediate release of intermediate buffers; blob URLs revoked 100ms after download
 - **Download Optimization**: Pre-computed blob caching for instant save prompts
 
 **Accessibility:**
@@ -115,8 +117,12 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 - Pure vanilla JavaScript (no jQuery)
 - Bootstrap 5.3.3
 - HTML5 Canvas API
+- Web Workers + OffscreenCanvas for encode/decode
 - CSS Variables for theming
 - No external dependencies for core functionality
+
+### Browser Requirements
+- Web Workers and OffscreenCanvas required (modern browsers; Safari 16.4+)
 
 ### License
 Original work © 2014 stylesuxx  
