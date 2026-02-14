@@ -236,6 +236,31 @@ function setDownloadCache(type, blob, width, height) {
   updateDownloadAvailability();
 }
 
+function toBlobInWorker(canvas, onBlob, onError) {
+  if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
+    onError('Web Workers and OffscreenCanvas are required. Please use a modern browser.');
+    return;
+  }
+  var width = canvas.width;
+  var height = canvas.height;
+  var imageData = canvas.getContext('2d').getImageData(0, 0, width, height);
+  var buffer = imageData.data.buffer;
+  var worker = new Worker('encode-worker.js');
+  worker.onmessage = function(e) {
+    worker.terminate();
+    if (e.data.type === 'error') {
+      onError(e.data.message);
+      return;
+    }
+    onBlob(e.data.blob, e.data.width, e.data.height);
+  };
+  worker.onerror = function(err) {
+    worker.terminate();
+    onError(err.message || 'Worker error');
+  };
+  worker.postMessage({ type: 'toBlob', width: width, height: height, data: buffer }, [buffer]);
+}
+
 function buildDownloadCache(type, canvas) {
   if (!canvas) {
     clearDownloadCache(type);
@@ -247,15 +272,25 @@ function buildDownloadCache(type, canvas) {
   DOWNLOAD_CACHE.building[type] = true;
   updateDownloadAvailability();
   
-  canvas.toBlob(function(blob) {
-    if (!blob) {
+  if (type === 'encoded') {
+    toBlobInWorker(canvas, function(blob, w, h) {
+      setDownloadCache(type, blob, w, h);
+    }, function(errMsg) {
       clearDownloadCache(type);
-      showError('Failed to prepare downloadable image. Please try again.');
+      showError(errMsg);
       updateDownloadAvailability();
-      return;
-    }
-    setDownloadCache(type, blob, canvas.width, canvas.height);
-  }, 'image/png');
+    });
+  } else {
+    canvas.toBlob(function(blob) {
+      if (!blob) {
+        clearDownloadCache(type);
+        showError('Failed to prepare downloadable image. Please try again.');
+        updateDownloadAvailability();
+        return;
+      }
+      setDownloadCache(type, blob, canvas.width, canvas.height);
+    }, 'image/png');
+  }
 }
 
 // Magic bytes and header parsing (decompression bomb + MIME spoofing mitigation)
@@ -492,11 +527,17 @@ function downloadCachedImage(type) {
   }
   
   var entry = DOWNLOAD_CACHE[type];
+  var objectUrl = entry.objectUrl;
   var link = document.createElement('a');
   var timestamp = new Date().getTime();
   link.download = 'steganography-' + type + '-' + timestamp + '.png';
-  link.href = entry.objectUrl;
+  link.href = objectUrl;
   link.click();
+  setTimeout(function() {
+    URL.revokeObjectURL(objectUrl);
+    DOWNLOAD_CACHE[type] = null;
+    updateDownloadAvailability();
+  }, 100);
 }
 
 // Make downloadCachedImage globally accessible
@@ -1160,6 +1201,7 @@ function encodeMessage() {
   if (errorElement) errorElement.style.display = 'none';
   document.querySelector(".binary").style.display = 'none';
 
+  var workerPending = false;
   try {
     var text = DOM_CACHE.get('messageTextarea')?.value || '';
     
@@ -1222,7 +1264,6 @@ function encodeMessage() {
 
     // Check if the image is big enough to hide the message
     var requiredBits = SENTINEL_BITS + (messageBytes.length * 8);
-    var totalAvailableBits = (width * height) * 3;  // Total bits in image
     if (requiredBits > (availablePixels * lsbBits * 3 + SENTINEL_BITS)) {
       showError('Message too long! Your message is ' + messageBytes.length.toLocaleString() + 
                 ' bytes but this image can only hide ' + maxCapacity.toLocaleString() + 
@@ -1230,41 +1271,18 @@ function encodeMessage() {
       return;
     }
 
-    nulledCanvas.width = width;
-    nulledCanvas.height = height;
-
-    messageCanvas.width = width;
-    messageCanvas.height = height;
-
-    // Normalize the original image: clear 1-LSB for sentinel, N-LSB for message
-    var original = originalContext.getImageData(0, 0, width, height);
-    var pixel = original.data;
-    
-    // Clear 1-LSB for sentinel pixels (first 19 pixels)
-    for (var i = 0; i < SENTINEL_PIXELS * 4; i += 4) {
-      for (var offset = 0; offset < 3; offset++) {
-        pixel[i + offset] = (pixel[i + offset] & 0xFE) & 0xFF;  // Clear 1 LSB
-      }
+    if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
+      showError('Web Workers and OffscreenCanvas are required. Please use a modern browser.');
+      return;
     }
-    
-    // Clear N-LSB for message pixels (remaining pixels)
-    var mask = ~((1 << lsbBits) - 1) & 0xFF;
-    for (var i = SENTINEL_PIXELS * 4; i < pixel.length; i += 4) {
-      for (var offset = 0; offset < 3; offset++) {
-        pixel[i + offset] = (pixel[i + offset] & mask) & 0xFF;
-      }
-    }
-    nulledContext.putImageData(original, 0, 0);
-
-    // Create 56-bit v3 sentinel: magic(16) + mode(4) + reserved(4) + length(32)
-    var magicBinary = MAGIC_V3;  // 16 bits: 1010101001010101 (0xAA55)
-    var modeBinary = lsbBits.toString(2).padStart(4, '0');  // 4 bits: 0001-0100
-    var reservedBinary = '0000';  // 4 bits: reserved for future use
-    var lengthBinary = messageBytes.length.toString(2).padStart(32, '0');  // 32 bits
-    var sentinelBinary = magicBinary + modeBinary + reservedBinary + lengthBinary;
 
     var totalMessageBits = messageBytes.length * 8;
     var previewBits = Math.min(BINARY_PREVIEW_BITS, totalMessageBits);
+    var magicBinary = MAGIC_V3;
+    var modeBinary = lsbBits.toString(2).padStart(4, '0');
+    var reservedBinary = '0000';
+    var lengthBinary = messageBytes.length.toString(2).padStart(32, '0');
+    var sentinelBinary = magicBinary + modeBinary + reservedBinary + lengthBinary;
     var previewParts = [];
     for (var p = 0; p < previewBits; p++) previewParts.push(getBit(messageBytes, p) ? '1' : '0');
     var binaryPreview = sentinelBinary + previewParts.join('');
@@ -1273,62 +1291,61 @@ function encodeMessage() {
     }
     document.querySelector('.binary .card-body').textContent = binaryPreview;
 
-    var message = nulledContext.getImageData(0, 0, width, height);
-    pixel = message.data;
-    var sentinelCounter = 0;
-    var messageCounter = 0;
+    messageCanvas.width = width;
+    messageCanvas.height = height;
 
-    for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelCounter < SENTINEL_BITS; i += 4) {
-      for (var offset = 0; offset < 3; offset++) {
-        if (sentinelCounter < SENTINEL_BITS) {
-          var bit = parseInt(sentinelBinary[sentinelCounter], 2);
-          pixel[i + offset] = (pixel[i + offset] | bit) & 0xFF;
-          sentinelCounter++;
-        }
-      }
-    }
+    DOWNLOAD_CACHE.building['encoded'] = true;
+    updateDownloadAvailability();
 
-    for (var i = SENTINEL_PIXELS * 4; i < pixel.length; i += 4) {
-      for (var offset = 0; offset < 3; offset++) {
-        if (messageCounter >= totalMessageBits) break;
-        var remaining = totalMessageBits - messageCounter;
-        var bits = remaining >= lsbBits
-          ? getBits(messageBytes, messageCounter, lsbBits)
-          : getBits(messageBytes, messageCounter, remaining);
-        pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
-        messageCounter += lsbBits;
-        if (messageCounter >= totalMessageBits) break;
+    var original = originalContext.getImageData(0, 0, width, height);
+    var buffer = original.data.buffer;
+    var worker = new Worker('lsb-encode-worker.js');
+    worker.onmessage = function(ev) {
+      worker.terminate();
+      if (ev.data.type === 'error') {
+        DOWNLOAD_CACHE.building['encoded'] = false;
+        updateDownloadAvailability();
+        showError(ev.data.message);
+        if (encodeButton) encodeButton.disabled = false;
+        return;
       }
-      if (messageCounter >= totalMessageBits) break;
-    }
-    messageContext.putImageData(message, 0, 0);
-    
-    buildDownloadCache('encoded', messageCanvas);
-    
-    try {
-      setEncodedPreviewVisibility(true);
-      var toggleEncoded = document.getElementById('previewToggleEncoded');
-      if (toggleEncoded) {
-        toggleEncoded.checked = true;
+      var resultImageData = new ImageData(new Uint8ClampedArray(ev.data.data), ev.data.width, ev.data.height);
+      messageContext.putImageData(resultImageData, 0, 0);
+      setDownloadCache('encoded', ev.data.blob, ev.data.width, ev.data.height);
+      try {
+        setEncodedPreviewVisibility(true);
+        var toggleEncoded = document.getElementById('previewToggleEncoded');
+        if (toggleEncoded) toggleEncoded.checked = true;
+        setEncodedPreviewMode('encoded');
+      } catch (previewError) {
+        showError('Error rendering encoded preview: ' + previewError.message);
       }
-      setEncodedPreviewMode('encoded');
-    } catch (previewError) {
-      showError('Error rendering encoded preview: ' + previewError.message);
-    }
-    
-    nulledCanvas.width = 0;
-    nulledCanvas.height = 0;
-
-    document.querySelector(".binary").style.display = 'block';
+      nulledCanvas.width = 0;
+      nulledCanvas.height = 0;
+      document.querySelector('.binary').style.display = 'block';
+      if (encodeButton) encodeButton.disabled = false;
+    };
+    worker.onerror = function(err) {
+      worker.terminate();
+      DOWNLOAD_CACHE.building['encoded'] = false;
+      updateDownloadAvailability();
+      showError(err.message || 'Worker error');
+      if (encodeButton) encodeButton.disabled = false;
+    };
+    workerPending = true;
+    worker.postMessage({
+      type: 'encode',
+      imageData: { width: width, height: height, data: buffer },
+      messageBytes: Array.from(messageBytes),
+      lsbBits: lsbBits
+    }, [buffer]);
+    return;
     
   } catch (error) {
     showError('Error encoding message: ' + error.message);
     console.error('Encoding error:', error);
   } finally {
-    // Re-enable button
-    if (encodeButton) {
-      encodeButton.disabled = false;
-    }
+    if (!workerPending && encodeButton) encodeButton.disabled = false;
   }
 }
 
@@ -1345,6 +1362,7 @@ function decodeMessage() {
     errorDecode.style.display = 'none';
   }
   
+  var decodeWorkerPending = false;
   try {
     var originalCanvas = DOM_CACHE.get('decodeCanvas');
     
@@ -1356,122 +1374,64 @@ function decodeMessage() {
     var width = originalCanvas.width;
     var height = originalCanvas.height;
     
-    // Validate dimensions
     if (!validateImageDimensions(width, height)) {
+      return;
+    }
+    
+    if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
+      showError('Web Workers and OffscreenCanvas are required. Please use a modern browser.');
       return;
     }
     
     var originalContext = originalCanvas.getContext("2d", { willReadFrequently: true });
     var original = originalContext.getImageData(0, 0, width, height);
-    var pixel = original.data;
-    var parsed = parseSentinelFromPixels(pixel);
-    var lsbBits = parsed.lsbBits;
-    var messageLength = parsed.messageLength;
-    var isV3 = parsed.isV3;
-
-    if (!isV3) {
-      showError('This image does not contain a valid v3 steganographic message. Please ensure the image was encoded with this tool.', 'decode');
-      return;
-    }
+    var buffer = original.data.buffer;
     
-    // Validate message length from sentinel
-    if (!Number.isSafeInteger(messageLength) || messageLength < 0) {
-      showError('Invalid or corrupted steganographic image.', 'decode');
-      return;
-    }
-    
-    // Handle zero-length message
-    if (messageLength === 0) {
-      showError('Image contains an empty message (0 bytes).', 'decode');
-      return;
-    }
-    
-    if (!validateMessageLength(messageLength)) {
-      return;
-    }
-
-    if (!Number.isInteger(lsbBits) || lsbBits < MIN_LSB_BITS || lsbBits > MAX_LSB_BITS) {
-      showError('Invalid or corrupted steganographic image.', 'decode');
-      return;
-    }
-
-    // Calculate maximum capacity based on LSB mode
-    var availablePixels = (width * height) - SENTINEL_PIXELS;
-    var maxCapacity = Math.floor((availablePixels * lsbBits * 3) / 8);
-    
-    if (!validateCapacity(maxCapacity)) {
-      return;
-    }
-    
-    if (messageLength > maxCapacity) {
-      showError('Corrupted image: Declared message length (' + messageLength.toLocaleString() + 
-                ') exceeds image capacity (' + maxCapacity.toLocaleString() + ').', 'decode');
-      return;
-    }
-    
-    // Extract message data using N-LSB mode (starting from pixel 20)
-    var messageBinaryArray = [];
-    var mask = (1 << lsbBits) - 1;  // Create mask for N bits
-    var requiredBits = messageLength * 8;
-    
-    for (var i = SENTINEL_PIXELS * 4; i < pixel.length && messageBinaryArray.length * lsbBits < requiredBits; i += 4) {
-      for (var offset = 0; offset < 3; offset++) {
-        if (messageBinaryArray.length * lsbBits >= requiredBits) break;
-        var extracted = pixel[i + offset] & mask;
-        var binary = extracted.toString(2).padStart(lsbBits, '0');
-        messageBinaryArray.push(binary);
+    decodeWorkerPending = true;
+    var worker = new Worker('lsb-decode-worker.js');
+    worker.onmessage = function(ev) {
+      worker.terminate();
+      if (ev.data.type === 'error') {
+        showError(ev.data.message, 'decode');
+        if (decodeButton) decodeButton.disabled = false;
+        return;
       }
-    }
-    var messageBinary = messageBinaryArray.join('');
-    
-    // Check if we have enough data
-    if (messageBinary.length < requiredBits) {
-      showError('Incomplete message data in image.', 'decode');
-      return;
-    }
-    
-    // Trim to exact message length
-    messageBinary = messageBinary.substring(0, requiredBits);
-    
-    // Convert binary to UTF-8 byte array
-    var byteArray = new Uint8Array(messageLength);
-    for (var i = 0; i < messageLength; i++) {
-      var byte = 0;
-      for (var j = 0; j < 8; j++) {
-        byte <<= 1;
-        byte |= parseInt(messageBinary[i * 8 + j], 2);
-      }
-      byteArray[i] = byte;
-    }
-    
-    // Decode UTF-8 bytes to text
-    const decoder = TEXT_DECODER;
-    var output = sanitizeDecodedMessage(decoder.decode(byteArray));
-    
-    // Calculate capacity utilization
-    var utilizationPercent = Math.round((messageLength / maxCapacity) * 100);
-    var availablePercent = 100 - utilizationPercent;
-    
-    // Update capacity visualization (stacked bar)
-    document.getElementById('decode-capacity-used-bar').style.width = utilizationPercent + '%';
-    document.getElementById('decode-capacity-used-text').textContent = 'Used: ' + utilizationPercent + '%';
-    document.getElementById('decode-capacity-available-bar').style.width = availablePercent + '%';
-    document.getElementById('decode-capacity-available-text').textContent = 'Available: ' + availablePercent + '%';
-    document.getElementById('decode-capacity-details').textContent = 
-      'Decoded ' + messageLength.toLocaleString() + ' bytes of ' + maxCapacity.toLocaleString() + ' total capacity (' + lsbBits + '-LSB mode). ' + 
-      (maxCapacity - messageLength).toLocaleString() + ' bytes unused.';
-    
-    document.querySelector('.decode-capacity-bar').style.display = 'block';
-    document.getElementById('decoded-message-text').textContent = output;
-    document.querySelector('.binary-decode').style.display = 'block';
+      var messageLength = ev.data.messageLength;
+      var lsbBits = ev.data.lsbBits;
+      var maxCapacity = ev.data.maxCapacity;
+      var output = ev.data.output;
+      
+      var utilizationPercent = Math.round((messageLength / maxCapacity) * 100);
+      var availablePercent = 100 - utilizationPercent;
+      
+      document.getElementById('decode-capacity-used-bar').style.width = utilizationPercent + '%';
+      document.getElementById('decode-capacity-used-text').textContent = 'Used: ' + utilizationPercent + '%';
+      document.getElementById('decode-capacity-available-bar').style.width = availablePercent + '%';
+      document.getElementById('decode-capacity-available-text').textContent = 'Available: ' + availablePercent + '%';
+      document.getElementById('decode-capacity-details').textContent = 
+        'Decoded ' + messageLength.toLocaleString() + ' bytes of ' + maxCapacity.toLocaleString() + ' total capacity (' + lsbBits + '-LSB mode). ' + 
+        (maxCapacity - messageLength).toLocaleString() + ' bytes unused.';
+      
+      document.querySelector('.decode-capacity-bar').style.display = 'block';
+      document.getElementById('decoded-message-text').textContent = output;
+      document.querySelector('.binary-decode').style.display = 'block';
+      if (decodeButton) decodeButton.disabled = false;
+    };
+    worker.onerror = function(err) {
+      worker.terminate();
+      showError(err.message || 'Worker error', 'decode');
+      if (decodeButton) decodeButton.disabled = false;
+    };
+    worker.postMessage({
+      type: 'decode',
+      imageData: { width: width, height: height, data: buffer }
+    }, [buffer]);
+    return;
     
   } catch (error) {
     showError('Error decoding message: ' + error.message, 'decode');
     console.error('Decoding error:', error);
   } finally {
-    // Re-enable button
-    if (decodeButton) {
-      decodeButton.disabled = false;
-    }
+    if (!decodeWorkerPending && decodeButton) decodeButton.disabled = false;
   }
 }
