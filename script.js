@@ -1,9 +1,19 @@
 // Security Configuration
 const MAX_MESSAGE_LENGTH = 10000000;      // 10MB byte limit (UTF-8 encoded)
 const MAX_IMAGE_DIMENSION = 10000;         // 10,000 x 10,000 px max
-const MAX_CAPACITY = 100000000;            // 100MB absolute max
+const MAX_THEORETICAL_EMBED_CAPACITY_BYTES = 150000000;  // ~150MB, allows max 10k×10k at 4-LSB
 const MAX_FILE_SIZE = 52428800;            // 50MB file size limit
 const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+
+// File signatures (magic bytes) for format validation - more reliable than file.type
+var FILE_SIGNATURES = {
+  png:  [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+  jpeg: [0xFF, 0xD8, 0xFF],
+  webp: [0x52, 0x49, 0x46, 0x46]  // RIFF at 0; WEBP at 8-11
+};
+
+// Binary display: truncate to avoid DoS from huge strings
+const BINARY_PREVIEW_BITS = 4096;
 
 // v3 Format - Fixed Sentinel + Variable Message
 const FORMAT_VERSION = 3;                  // Current format version
@@ -13,9 +23,19 @@ const MAGIC_V3 = '1010101001010101';       // 0xAA55 (16-bit magic number)
 const MIN_LSB_BITS = 1;                    // Minimum LSB mode
 const MAX_LSB_BITS = 4;                    // Maximum LSB mode
 
+// Bit extraction from bytes (avoids building giant binary strings)
+function getBit(bytes, bitIndex) {
+  return (bytes[bitIndex >> 3] >> (7 - (bitIndex & 7))) & 1;
+}
+function getBits(bytes, bitIndex, n) {
+  var result = 0;
+  for (var i = 0; i < n; i++) result = (result << 1) | getBit(bytes, bitIndex + i);
+  return result;
+}
+
 // Performance: Reusable encoder/decoder (stateless)
 const TEXT_ENCODER = new TextEncoder();
-const TEXT_DECODER = new TextDecoder();
+const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 // Performance: DOM element cache
 const DOM_CACHE = {
@@ -56,12 +76,10 @@ const DOM_CACHE = {
   }
 };
 
-// Download cache (precomputed PNG blobs)
+// Download cache (precomputed PNG blobs) - encoded only (original blob unused)
 const DOWNLOAD_CACHE = {
-  original: null,
   encoded: null,
   building: {
-    original: false,
     encoded: false
   }
 };
@@ -195,7 +213,7 @@ function clearDownloadCache(type) {
 }
 
 function clearAllDownloadCache() {
-  ['original', 'encoded'].forEach(type => clearDownloadCache(type));
+  clearDownloadCache('encoded');
   updateDownloadAvailability();
 }
 
@@ -347,20 +365,62 @@ function validateMagicBytesAndDimensions(file, context) {
 }
 
 // Validation Functions
-function validateFileType(file) {
-  if (!file) {
-    showError('No file selected. Please choose an image file.');
-    return false;
+function checkFileSignature(buffer) {
+  var bytes = new Uint8Array(buffer);
+  if (bytes.length < 12) return false;
+
+  var i;
+  for (i = 0; i < FILE_SIGNATURES.png.length; i++) {
+    if (bytes[i] !== FILE_SIGNATURES.png[i]) break;
   }
-  if (!ALLOWED_FILE_TYPES.includes(file.type)) {
-    showError('Invalid file type. Please select a PNG, JPEG, or WebP image.');
-    return false;
+  if (i === FILE_SIGNATURES.png.length) return true;
+
+  for (i = 0; i < FILE_SIGNATURES.jpeg.length; i++) {
+    if (bytes[i] !== FILE_SIGNATURES.jpeg[i]) break;
+  }
+  if (i === FILE_SIGNATURES.jpeg.length) return true;
+
+  for (i = 0; i < FILE_SIGNATURES.webp.length; i++) {
+    if (bytes[i] !== FILE_SIGNATURES.webp[i]) break;
+  }
+  if (i === FILE_SIGNATURES.webp.length &&
+      bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    if (bytes.length < 16) return false;
+    var vp8  = bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x20;
+    var vp8l = bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x4C;
+    var vp8x = bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x58;
+    if (vp8 || vp8l || vp8x) return true;
+  }
+
+  return false;
+}
+
+function validateFileType(file, context, onValid) {
+  if (!file) {
+    showError('No file selected. Please choose an image file.', context);
+    if (onValid) onValid(false);
+    return;
   }
   if (file.size > MAX_FILE_SIZE) {
-    showError('File too large! Maximum file size: ' + (MAX_FILE_SIZE / 1048576).toFixed(0) + 'MB. Your file: ' + (file.size / 1048576).toFixed(1) + 'MB.');
-    return false;
+    showError('File too large! Maximum file size: ' + (MAX_FILE_SIZE / 1048576).toFixed(0) + 'MB. Your file: ' + (file.size / 1048576).toFixed(1) + 'MB.', context);
+    if (onValid) onValid(false);
+    return;
   }
-  return true;
+
+  var reader = new FileReader();
+  reader.onload = function() {
+    if (!checkFileSignature(reader.result)) {
+      showError('Invalid file type. Please select a PNG, JPEG, or WebP image.', context);
+      if (onValid) onValid(false);
+      return;
+    }
+    if (onValid) onValid(true);
+  };
+  reader.onerror = function() {
+    showError('Could not read file. Please try again.', context);
+    if (onValid) onValid(false);
+  };
+  reader.readAsArrayBuffer(file.slice(0, 16));
 }
 
 function validateImageDimensions(width, height) {
@@ -401,7 +461,7 @@ function validateCapacity(capacity) {
     showError('Image capacity calculation error.');
     return false;
   }
-  if (capacity > MAX_CAPACITY) {
+  if (capacity > MAX_THEORETICAL_EMBED_CAPACITY_BYTES) {
     showError('Image capacity exceeds safety limits.');
     return false;
   }
@@ -446,12 +506,12 @@ document.addEventListener('DOMContentLoaded', function() {
   // File input listeners
   var encodeFileInput = document.querySelector('input[name=baseFile]');
   if (encodeFileInput) {
-    encodeFileInput.addEventListener('change', previewEncodeImage);
+    encodeFileInput.addEventListener('change', function() { previewEncodeImage(); });
   }
-  
+
   var decodeFileInput = document.querySelector('input[name=decodeFile]');
   if (decodeFileInput) {
-    decodeFileInput.addEventListener('change', previewDecodeImage);
+    decodeFileInput.addEventListener('change', function() { previewDecodeImage(); });
   }
   
   // Button listeners
@@ -470,7 +530,16 @@ document.addEventListener('DOMContentLoaded', function() {
       decodeMessage();
     });
   }
-  
+
+  // Clear download cache when switching away from Encode tab (frees blob memory)
+  document.querySelectorAll('a[data-bs-toggle="tab"]').forEach(function(tab) {
+    tab.addEventListener('shown.bs.tab', function(e) {
+      if (e.target.getAttribute('href') === '#decode') {
+        clearEncodedCaches();
+      }
+    });
+  });
+
   // Message textarea - real-time character counter and auto LSB selection
   var messageTextarea = DOM_CACHE.get('messageTextarea');
   if (messageTextarea) {
@@ -523,61 +592,54 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   // Drag and Drop File Upload
-  function setupDragAndDrop(dropZone, fileInput) {
+  // Pass file directly to onDrop - input.files assignment is read-only in most browsers
+  function setupDragAndDrop(dropZone, fileInput, onDrop) {
     if (!dropZone || !fileInput) return;
-    
-    // Prevent browser default behavior
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-      dropZone.addEventListener(eventName, (e) => {
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(function(eventName) {
+      dropZone.addEventListener(eventName, function(e) {
         e.preventDefault();
         e.stopPropagation();
       });
     });
-    
-    // Visual feedback - add active state
-    ['dragenter', 'dragover'].forEach(eventName => {
-      dropZone.addEventListener(eventName, () => {
+
+    ['dragenter', 'dragover'].forEach(function(eventName) {
+      dropZone.addEventListener(eventName, function() {
         dropZone.classList.add('drag-active');
       });
     });
-    
-    // Visual feedback - remove active state
-    ['dragleave', 'drop'].forEach(eventName => {
-      dropZone.addEventListener(eventName, () => {
+
+    ['dragleave', 'drop'].forEach(function(eventName) {
+      dropZone.addEventListener(eventName, function() {
         dropZone.classList.remove('drag-active');
       });
     });
-    
-    // Handle file drop
-    dropZone.addEventListener('drop', (e) => {
-      const files = e.dataTransfer.files;
-      
-      // Validate we have files
-      if (files && files.length > 0) {
-        // Set to file input
-        fileInput.files = files;
-        
-        // Trigger existing change event
-        fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+    dropZone.addEventListener('drop', function(e) {
+      var files = e.dataTransfer.files;
+      if (files && files.length > 0 && onDrop) {
+        onDrop(files[0]);
       }
     });
-    
-    // Make drop zone clickable
-    dropZone.addEventListener('click', () => {
+
+    dropZone.addEventListener('click', function() {
       fileInput.click();
     });
   }
-  
-  // Initialize both drop zones
-  const encodeDropZone = document.getElementById('encodeDropZone');
-  const decodeDropZone = document.getElementById('decodeDropZone');
-  
+
+  var encodeDropZone = document.getElementById('encodeDropZone');
+  var decodeDropZone = document.getElementById('decodeDropZone');
+
   if (encodeDropZone && encodeFileInput) {
-    setupDragAndDrop(encodeDropZone, encodeFileInput);
+    setupDragAndDrop(encodeDropZone, encodeFileInput, function(file) {
+      previewEncodeImage(file);
+    });
   }
-  
+
   if (decodeDropZone && decodeFileInput) {
-    setupDragAndDrop(decodeDropZone, decodeFileInput);
+    setupDragAndDrop(decodeDropZone, decodeFileInput, function(file) {
+      previewDecodeImage(file);
+    });
   }
   
   var downloadEncodedBtn = document.getElementById('downloadEncoded');
@@ -627,27 +689,22 @@ document.addEventListener('DOMContentLoaded', function() {
   updateDownloadAvailability();
 });
 
-function previewDecodeImage() {
-  var file = document.querySelector('input[name=decodeFile]').files[0];
-  
-  toggleDecodeDropZonePreview(false);
-  
-  if (!validateFileType(file)) {
-    return;
+function previewDecodeImage(file) {
+  if (!file) {
+    file = document.querySelector('input[name=decodeFile]').files[0];
   }
 
+  toggleDecodeDropZonePreview(false);
   validateMagicBytesAndDimensions(file, 'decode').then(function(headerResult) {
     if (!headerResult) return;
-    previewImage(file, ".decode canvas", function(image) {
-    try {
-      renderDecodeDropZonePreview(image);
-    } catch (error) {
-      showError('Error processing decode image: ' + error.message, 'decode');
-    }
-    
-    // Detect LSB mode from uploaded image
-    detectLsbMode();
-  });
+    previewImage(file, '.decode canvas', function(image) {
+      try {
+        renderDecodeDropZonePreview(image);
+      } catch (error) {
+        showError('Error processing decode image: ' + error.message, 'decode');
+      }
+      detectLsbMode();
+    }, 'decode');
   });
 }
 
@@ -890,40 +947,40 @@ function showCapacityError(messageBytes, imageWidth, imageHeight) {
   }
 }
 
+function parseSentinelFromPixels(pixel) {
+  var sentinelBitsArray = [];
+  for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelBitsArray.length < SENTINEL_BITS; i += 4) {
+    for (var offset = 0; offset < 3; offset++) {
+      sentinelBitsArray.push((pixel[i + offset] & 1).toString());
+      if (sentinelBitsArray.length >= SENTINEL_BITS) break;
+    }
+  }
+  var sentinelBits = sentinelBitsArray.join('');
+  var magic = sentinelBits.substring(0, 16);
+  var lsbBits = 1;
+  var messageLength = 0;
+  var isV3 = false;
+  if (magic === MAGIC_V3) {
+    lsbBits = parseInt(sentinelBits.substring(16, 20), 2);
+    messageLength = parseInt(sentinelBits.substring(24, 56), 2);
+    isV3 = true;
+  }
+  return { lsbBits: lsbBits, messageLength: messageLength, isV3: isV3 };
+}
+
 function detectLsbMode() {
   try {
     var canvas = DOM_CACHE.get('decodeCanvas');
     if (!canvas) return;
-    
+
     var ctx = canvas.getContext("2d", { willReadFrequently: true });
     var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    var pixel = imageData.data;
-    
-    // Always read sentinel in 1-LSB mode (first 19 pixels = 57 bits, we need 56)
-    var sentinelBitsArray = [];
-    for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelBitsArray.length < SENTINEL_BITS; i += 4) {
-      for (var offset = 0; offset < 3; offset++) {
-        sentinelBitsArray.push((pixel[i + offset] & 1).toString());
-        if (sentinelBitsArray.length >= SENTINEL_BITS) break;
-      }
-    }
-    var sentinelBits = sentinelBitsArray.join('');
-    
-    // Parse sentinel structure
-    var magic = sentinelBits.substring(0, 16);
-    var detectedMode = 1;
-    var messageLength = 0;
-    var isV3 = false;
-    
-    if (magic === MAGIC_V3) {
-      // v3 format detected!
-      detectedMode = parseInt(sentinelBits.substring(16, 20), 2);
-      // Reserved bits 20-23 (skip)
-      messageLength = parseInt(sentinelBits.substring(24, 56), 2);
-      isV3 = true;
-    }
-    
-    // Update UI
+    var parsed = parseSentinelFromPixels(imageData.data);
+    var detectedMode = parsed.lsbBits;
+    var messageLength = parsed.messageLength;
+    var isV3 = parsed.isV3;
+
+    // Update UI (display only - decode does not trust DOM)
     var detector = document.getElementById('decode-mode-detector');
     var modeText = document.getElementById('detected-mode-text');
     var modeIcon = document.getElementById('detected-mode-icon');
@@ -949,9 +1006,11 @@ function detectLsbMode() {
   }
 }
 
-function previewEncodeImage() {
-  var file = document.querySelector("input[name=baseFile]").files[0];
-  
+function previewEncodeImage(file) {
+  if (!file) {
+    file = document.querySelector("input[name=baseFile]").files[0];
+  }
+
   clearAllDownloadCache();
   toggleEncodeDropZonePreview(false);
   setEncodedPreviewVisibility(false);
@@ -960,54 +1019,38 @@ function previewEncodeImage() {
     toggleEncoded.checked = true;
   }
   
-  if (!validateFileType(file)) {
-    return;
-  }
+  validateFileType(file, undefined, function(valid) {
+    if (!valid) return;
 
-  var errorElement = DOM_CACHE.get('errorElement');
-  if (errorElement) errorElement.style.display = 'none';
+    var errorElement = DOM_CACHE.get('errorElement');
+    if (errorElement) errorElement.style.display = 'none';
 
-  validateMagicBytesAndDimensions(file).then(function(headerResult) {
-    if (!headerResult) return;
-    previewImage(file, ".original canvas", function(image, canvas) {
-    try {
-      var domCanvas = DOM_CACHE.get('originalCanvas');
-      
-      buildDownloadCache('original', domCanvas);
-      renderEncodeDropZonePreview(image);
-      
-      // Default to 1-LSB for initial display
-      var lsbBits = 1;
-      
-      // Calculate capacity based on v3 format
-      var availablePixels = (domCanvas.width * domCanvas.height) - SENTINEL_PIXELS;
-      var totalBits = availablePixels * lsbBits * 3;
-      var capacity = Math.floor(totalBits / 8);
-      
-      if (!validateCapacity(capacity)) {
-        return;
-      }
-      
-      // Show capacity badge
-      var capacityBadge = document.getElementById('capacity-badge');
-      if (capacityBadge) {
-        capacityBadge.style.display = 'inline-block';
-        capacityBadge.textContent = '💾 0 / ' + capacity.toLocaleString() + ' bytes (' + lsbBits + '-LSB)';
-      }
-      
-      // Update modal with current image data
-      updateModalWithImageData(domCanvas.width, domCanvas.height, capacity, lsbBits);
-      
-      // Trigger message analysis if there's text in the textarea
-      var messageText = DOM_CACHE.get('messageTextarea')?.value || '';
-      if (messageText) {
-        updateMessageAnalysis(messageText);
-      }
-    } catch (error) {
-      toggleEncodeDropZonePreview(false);
-      showError('Error processing image: ' + error.message);
-    }
-  });
+    validateMagicBytesAndDimensions(file).then(function(headerResult) {
+      if (!headerResult) return;
+      previewImage(file, '.original canvas', function(image, canvas) {
+        try {
+          var domCanvas = DOM_CACHE.get('originalCanvas');
+          buildDownloadCache('original', domCanvas);
+          renderEncodeDropZonePreview(image);
+          var lsbBits = 1;
+          var availablePixels = (domCanvas.width * domCanvas.height) - SENTINEL_PIXELS;
+          var totalBits = availablePixels * lsbBits * 3;
+          var capacity = Math.floor(totalBits / 8);
+          if (!validateCapacity(capacity)) return;
+          var capacityBadge = document.getElementById('capacity-badge');
+          if (capacityBadge) {
+            capacityBadge.style.display = 'inline-block';
+            capacityBadge.textContent = '💾 0 / ' + capacity.toLocaleString() + ' bytes (' + lsbBits + '-LSB)';
+          }
+          updateModalWithImageData(domCanvas.width, domCanvas.height, capacity, lsbBits);
+          var messageText = DOM_CACHE.get('messageTextarea')?.value || '';
+          if (messageText) updateMessageAnalysis(messageText);
+        } catch (error) {
+          toggleEncodeDropZonePreview(false);
+          showError('Error processing image: ' + error.message);
+        }
+      });
+    });
   });
 }
 
@@ -1079,26 +1122,27 @@ function updateModalWithImageData(width, height, capacity, lsbBitsPerChannel) {
   modalCalcSteps.appendChild(createCodeLine('4. ', lsbBitsAvailable.toLocaleString() + ' ÷ 8 = ' + capacity.toLocaleString(), 'bytes capacity'));
 }
 
-function previewImage(file, canvasSelector, callback) {
+function previewImage(file, canvasSelector, callback, errorContext) {
   var image = new Image();
   var canvas = document.querySelector(canvasSelector);
   var context = canvas.getContext('2d');
 
-  if (file) {
-    image.src = URL.createObjectURL(file);
+  if (!file) return;
 
-    image.onload = function() {
-      canvas.width = image.width;
-      canvas.height = image.height;
+  image.onload = function() {
+    canvas.width = image.width;
+    canvas.height = image.height;
+    context.drawImage(image, 0, 0);
+    URL.revokeObjectURL(image.src);
+    callback(image, canvas);
+  };
 
-      context.drawImage(image, 0, 0);
+  image.onerror = function() {
+    URL.revokeObjectURL(image.src);
+    showError('Could not decode image. File may be corrupted or not a valid PNG, JPEG, or WebP.', errorContext);
+  };
 
-      // Clean up object URL to prevent memory leak
-      URL.revokeObjectURL(image.src);
-
-      callback(image, canvas);
-    }
-  }
+  image.src = URL.createObjectURL(file);
 }
 
 function encodeMessage() {
@@ -1218,24 +1262,21 @@ function encodeMessage() {
     var lengthBinary = messageBytes.length.toString(2).padStart(32, '0');  // 32 bits
     var sentinelBinary = magicBinary + modeBinary + reservedBinary + lengthBinary;
 
-    // Convert the UTF-8 bytes to a binary string
-    var messageBinaryArray = [];
-    for (var i = 0; i < messageBytes.length; i++) {
-      var binaryByte = messageBytes[i].toString(2).padStart(8, '0');
-      messageBinaryArray.push(binaryByte);
+    var totalMessageBits = messageBytes.length * 8;
+    var previewBits = Math.min(BINARY_PREVIEW_BITS, totalMessageBits);
+    var previewParts = [];
+    for (var p = 0; p < previewBits; p++) previewParts.push(getBit(messageBytes, p) ? '1' : '0');
+    var binaryPreview = sentinelBinary + previewParts.join('');
+    if (totalMessageBits > BINARY_PREVIEW_BITS) {
+      binaryPreview += ' ... truncated (' + totalMessageBits.toLocaleString() + ' bits total)';
     }
-    var messageBinary = messageBinaryArray.join('');
-    
-    var binaryMessage = sentinelBinary + messageBinary;
-    document.querySelector('.binary .card-body').textContent = binaryMessage;
+    document.querySelector('.binary .card-body').textContent = binaryPreview;
 
-    // Apply the binary string to the image
     var message = nulledContext.getImageData(0, 0, width, height);
     pixel = message.data;
     var sentinelCounter = 0;
     var messageCounter = 0;
-    
-    // Step 1: Embed sentinel using 1-LSB (first 19 pixels = 57 bits, we use 56)
+
     for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelCounter < SENTINEL_BITS; i += 4) {
       for (var offset = 0; offset < 3; offset++) {
         if (sentinelCounter < SENTINEL_BITS) {
@@ -1245,27 +1286,19 @@ function encodeMessage() {
         }
       }
     }
-    
-    // Step 2: Embed message data using N-LSB mode (starting from pixel 20)
+
     for (var i = SENTINEL_PIXELS * 4; i < pixel.length; i += 4) {
       for (var offset = 0; offset < 3; offset++) {
-        if (messageCounter + lsbBits <= messageBinary.length) {
-          // Extract N bits from message binary
-          var bits = parseInt(messageBinary.substring(messageCounter, messageCounter + lsbBits), 2);
-          pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
-          messageCounter += lsbBits;
-        } else if (messageCounter < messageBinary.length) {
-          // Handle remaining bits if message doesn't align perfectly
-          var remaining = messageBinary.substring(messageCounter);
-          var bits = parseInt(remaining.padEnd(lsbBits, '0'), 2);
-          pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
-          messageCounter = messageBinary.length;
-          break;
-        } else {
-          break;
-        }
+        if (messageCounter >= totalMessageBits) break;
+        var remaining = totalMessageBits - messageCounter;
+        var bits = remaining >= lsbBits
+          ? getBits(messageBytes, messageCounter, lsbBits)
+          : getBits(messageBytes, messageCounter, remaining);
+        pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
+        messageCounter += lsbBits;
+        if (messageCounter >= totalMessageBits) break;
       }
-      if (messageCounter >= messageBinary.length) break;
+      if (messageCounter >= totalMessageBits) break;
     }
     messageContext.putImageData(message, 0, 0);
     
@@ -1330,19 +1363,11 @@ function decodeMessage() {
     var originalContext = originalCanvas.getContext("2d", { willReadFrequently: true });
     var original = originalContext.getImageData(0, 0, width, height);
     var pixel = original.data;
-    
-    // Get detected mode and message length from detector
-    var detector = document.getElementById('decode-mode-detector');
-    var lsbBits = 1;
-    var messageLength = 0;
-    var isV3 = false;
-    
-    if (detector) {
-      lsbBits = parseInt(detector.getAttribute('data-detected-mode') || 1, 10);
-      messageLength = parseInt(detector.getAttribute('data-message-length') || 0, 10);
-      isV3 = detector.getAttribute('data-is-v3') === 'true';
-    }
-    
+    var parsed = parseSentinelFromPixels(pixel);
+    var lsbBits = parsed.lsbBits;
+    var messageLength = parsed.messageLength;
+    var isV3 = parsed.isV3;
+
     if (!isV3) {
       showError('This image does not contain a valid v3 steganographic message. Please ensure the image was encoded with this tool.', 'decode');
       return;
@@ -1363,7 +1388,12 @@ function decodeMessage() {
     if (!validateMessageLength(messageLength)) {
       return;
     }
-    
+
+    if (!Number.isInteger(lsbBits) || lsbBits < MIN_LSB_BITS || lsbBits > MAX_LSB_BITS) {
+      showError('Invalid or corrupted steganographic image.', 'decode');
+      return;
+    }
+
     // Calculate maximum capacity based on LSB mode
     var availablePixels = (width * height) - SENTINEL_PIXELS;
     var maxCapacity = Math.floor((availablePixels * lsbBits * 3) / 8);

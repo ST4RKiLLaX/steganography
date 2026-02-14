@@ -87,8 +87,8 @@
 
 **File Type Validation**
 - Original: No validation
-- New: Whitelist-based file type checking (PNG, JPEG, WebP only)
-- Risk Addressed: Malicious file upload attempts
+- New: Magic bytes (file signature) validation for PNG, JPEG, WebP; Image decode onerror handler
+- Risk Addressed: Spoofed MIME types (file.type unreliable); corrupted/invalid images now show clear error
 
 **File Size Validation**
 - Original: No limit
@@ -211,6 +211,36 @@
 **Silent Failures**
 - Mitigated: Dedicated error displays per context
 - Prevents: Users unaware of operation failures
+- Severity: Medium → None
+
+**Drag-and-Drop File Assignment**
+- Mitigated: Pass dropped file directly to preview logic; no longer assign to input.files
+- Prevents: UI state desync when browsers block programmatic file assignment (input.files is read-only)
+- Severity: Low → None
+
+**Object URL / Blob Retention**
+- Mitigated: Removed unused original cache; clear encoded cache when switching to Decode tab
+- Prevents: Memory pressure from retaining large blobs longer than needed
+- Severity: Low → None
+
+**Decode Parameter Trust**
+- Mitigated: Decode now reads lsbBits and messageLength from sentinel pixels, not DOM attributes
+- Prevents: Tampered DOM causing incorrect extraction or resource consumption
+- Severity: Low → None
+
+**UTF-8 Decode Integrity**
+- Mitigated: TextDecoder with fatal: true raises on invalid UTF-8 instead of replacing
+- Prevents: Corrupted/malicious payloads decoding silently with replacement chars
+- Severity: Low → None
+
+**Capacity Validation**
+- Fixed: MAX_CAPACITY (100MB) caused false-fail for max-sized images (~150MB at 4-LSB)
+- Renamed to MAX_THEORETICAL_EMBED_CAPACITY_BYTES, increased to 150MB
+- Severity: Low → None
+
+**Encode Binary String DoS**
+- Mitigated: Embed directly from messageBytes via bit ops; binary display truncated to 4k-bit preview
+- Prevents: Giant messageBinary string causing browser freeze/crash on moderate-sized messages
 - Severity: Medium → None
 
 **Data Loss**
