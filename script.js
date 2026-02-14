@@ -318,9 +318,10 @@ function readImageDimensionsFromHeader(file) {
           var vp8l = vp8 && arr[15] === 0x4C;
           var vp8x = vp8 && arr[15] === 0x58;
           var w, h;
-          if (vp8x && arr.length >= 32) {
-            w = (arr[24] | (arr[25] << 8) | (arr[26] << 16) | (arr[27] << 24)) - 1;
-            h = (arr[28] | (arr[29] << 8) | (arr[30] << 16) | (arr[31] << 24)) - 1;
+          if (vp8x && arr.length >= 30) {
+            // Width and height are 24-bit (3 bytes) each; spec uses "Minus One", so add 1
+            w = (arr[24] | (arr[25] << 8) | (arr[26] << 16)) + 1;
+            h = (arr[27] | (arr[28] << 8) | (arr[29] << 16)) + 1;
           } else if (vp8l && arr.length >= 25) {
             var val = arr[21] | (arr[22] << 8) | (arr[23] << 16) | ((arr[24] & 0x3F) << 24);
             w = (val & 0x3FFF) + 1;
