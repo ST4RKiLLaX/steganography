@@ -122,9 +122,6 @@ function setEncodedPreviewVisibility(showPreview) {
 }
 
 function renderPreviewCanvas(sourceCanvas, targetCanvas) {
-  // #region agent log
-  fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H2',location:'script.js:renderPreviewCanvas',message:'render called',data:{sourceWidth:sourceCanvas?.width,sourceHeight:sourceCanvas?.height,targetWidth:targetCanvas?.width,targetHeight:targetCanvas?.height},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   if (!sourceCanvas || !targetCanvas) {
     throw new Error('Preview source or target missing.');
   }
@@ -138,17 +135,10 @@ function renderPreviewCanvas(sourceCanvas, targetCanvas) {
 }
 
 function setEncodedPreviewMode(mode) {
-  // #region agent log
-  fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H1',location:'script.js:setEncodedPreviewMode',message:'set mode called',data:{mode:mode},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
   try {
     var previewCanvas = document.getElementById('encodedPreviewCanvas');
     var originalCanvas = DOM_CACHE.get('originalCanvas');
     var encodedCanvas = DOM_CACHE.get('messageCanvas');
-    
-    // #region agent log
-    fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H1',location:'script.js:setEncodedPreviewMode',message:'canvas check',data:{hasPreview:!!previewCanvas,hasOriginal:!!originalCanvas,hasEncoded:!!encodedCanvas},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
 
     if (mode === 'original') {
       renderPreviewCanvas(originalCanvas, previewCanvas);
@@ -156,9 +146,6 @@ function setEncodedPreviewMode(mode) {
       renderPreviewCanvas(encodedCanvas, previewCanvas);
     }
   } catch (error) {
-    // #region agent log
-    fetch('http://127.0.0.1:7245/ingest/ec0ece77-b891-4cda-bced-930347ca9555',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H1',location:'script.js:setEncodedPreviewMode',message:'error',data:{error:error.message},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     showError('Error updating encoded preview: ' + error.message);
   }
 }
@@ -253,6 +240,112 @@ function buildDownloadCache(type, canvas) {
   }, 'image/png');
 }
 
+// Magic bytes and header parsing (decompression bomb + MIME spoofing mitigation)
+var MAGIC_PNG = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+var MAGIC_JPEG = new Uint8Array([0xFF, 0xD8, 0xFF]);
+var MAGIC_WEBP_RIFF = new Uint8Array([0x52, 0x49, 0x46, 0x46]);
+var MAGIC_WEBP_WEBP = new Uint8Array([0x57, 0x45, 0x42, 0x50]);
+var JPEG_SOF_MARKERS = [0xC0, 0xC1, 0xC2];
+var JPEG_HEADER_SCAN_BYTES = 65536;
+
+function arraysEqual(a, b, len) {
+  for (var i = 0; i < len; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function readImageDimensionsFromHeader(file) {
+  return new Promise(function(resolve, reject) {
+    if (!file || !file.slice) {
+      reject(new Error('Invalid file.'));
+      return;
+    }
+    var bytesToRead = 32;
+    if (file.size < 24) {
+      reject(new Error('File too small to be a valid image.'));
+      return;
+    }
+    file.slice(0, Math.max(bytesToRead, JPEG_HEADER_SCAN_BYTES)).arrayBuffer()
+      .then(function(buf) {
+        var arr = new Uint8Array(buf);
+        var view = buf.byteLength >= 4 ? new DataView(buf) : null;
+
+        if (arr.length >= 24 && arraysEqual(arr, MAGIC_PNG, 8)) {
+          var w = view.getUint32(16, false);
+          var h = view.getUint32(20, false);
+          resolve({ width: w, height: h, detectedType: 'image/png' });
+          return;
+        }
+
+        if (arr.length >= 3 && arr[0] === 0xFF && arr[1] === 0xD8 && arr[2] === 0xFF) {
+          for (var i = 2; i < arr.length - 8; i++) {
+            if (arr[i] === 0xFF && JPEG_SOF_MARKERS.indexOf(arr[i + 1]) !== -1) {
+              var h = (arr[i + 5] << 8) | arr[i + 6];
+              var w = (arr[i + 7] << 8) | arr[i + 8];
+              resolve({ width: w, height: h, detectedType: 'image/jpeg' });
+              return;
+            }
+          }
+          reject(new Error('Invalid JPEG: no SOF marker found.'));
+          return;
+        }
+
+        if (arr.length >= 12 && arraysEqual(arr, MAGIC_WEBP_RIFF, 4) && arraysEqual(arr.subarray(8), MAGIC_WEBP_WEBP, 4)) {
+          if (arr.length < 30) {
+            reject(new Error('Invalid WebP: header truncated.'));
+            return;
+          }
+          var vp8 = arr[12] === 0x56 && arr[13] === 0x50 && arr[14] === 0x38;
+          var vp8l = vp8 && arr[15] === 0x4C;
+          var vp8x = vp8 && arr[15] === 0x58;
+          var w, h;
+          if (vp8x && arr.length >= 32) {
+            w = (arr[24] | (arr[25] << 8) | (arr[26] << 16) | (arr[27] << 24)) - 1;
+            h = (arr[28] | (arr[29] << 8) | (arr[30] << 16) | (arr[31] << 24)) - 1;
+          } else if (vp8l && arr.length >= 25) {
+            var val = arr[21] | (arr[22] << 8) | (arr[23] << 16) | ((arr[24] & 0x3F) << 24);
+            w = (val & 0x3FFF) + 1;
+            h = ((val >> 14) & 0x3FFF) + 1;
+          } else if (vp8 && arr[15] === 0x20 && arr.length >= 27) {
+            w = arr[23] | ((arr[24] & 0x3F) << 8);
+            h = (arr[24] >> 6) | (arr[25] << 2) | ((arr[26] & 0x0F) << 10);
+          } else {
+            reject(new Error('Invalid WebP: unsupported chunk type.'));
+            return;
+          }
+          resolve({ width: w, height: h, detectedType: 'image/webp' });
+          return;
+        }
+
+        reject(new Error('Invalid file: not a valid PNG, JPEG, or WebP image.'));
+      })
+      .catch(function(err) {
+        reject(err);
+      });
+  });
+}
+
+function validateMagicBytesAndDimensions(file, context) {
+  return readImageDimensionsFromHeader(file).then(function(result) {
+    if (!ALLOWED_FILE_TYPES.includes(result.detectedType)) {
+      showError('Invalid file: not a valid PNG, JPEG, or WebP image.', context);
+      return null;
+    }
+    if (file.type && file.type !== result.detectedType) {
+      showError('File type mismatch: declared ' + file.type + ' but file signature indicates ' + result.detectedType + '.', context);
+      return null;
+    }
+    if (!validateImageDimensions(result.width, result.height)) {
+      return null;
+    }
+    return result;
+  }).catch(function(err) {
+    showError(err.message || 'Invalid file: not a valid PNG, JPEG, or WebP image.', context);
+    return null;
+  });
+}
+
 // Validation Functions
 function validateFileType(file) {
   if (!file) {
@@ -296,6 +389,11 @@ function validateMessageLength(length) {
     return false;
   }
   return true;
+}
+
+function sanitizeDecodedMessage(str) {
+  if (typeof str !== 'string') return '';
+  return str.replace(/[\u202A-\u202E\u2066-\u2069]/g, '');
 }
 
 function validateCapacity(capacity) {
@@ -538,7 +636,9 @@ function previewDecodeImage() {
     return;
   }
 
-  previewImage(file, ".decode canvas", function(image) {
+  validateMagicBytesAndDimensions(file, 'decode').then(function(headerResult) {
+    if (!headerResult) return;
+    previewImage(file, ".decode canvas", function(image) {
     try {
       renderDecodeDropZonePreview(image);
     } catch (error) {
@@ -547,6 +647,7 @@ function previewDecodeImage() {
     
     // Detect LSB mode from uploaded image
     detectLsbMode();
+  });
   });
 }
 
@@ -609,7 +710,7 @@ function updateMessageAnalysis(text) {
   
   if (isManual) {
     // Use manual mode
-    var manualMode = parseInt(document.getElementById('manual-lsb-mode').value);
+    var manualMode = parseInt(document.getElementById('manual-lsb-mode').value, 10);
     updateManualModeAnalysis(byteCount, canvas.width, canvas.height, manualMode);
   } else {
     // Calculate optimal mode
@@ -866,15 +967,11 @@ function previewEncodeImage() {
   var errorElement = DOM_CACHE.get('errorElement');
   if (errorElement) errorElement.style.display = 'none';
 
-  previewImage(file, ".original canvas", function(image, canvas) {
+  validateMagicBytesAndDimensions(file).then(function(headerResult) {
+    if (!headerResult) return;
+    previewImage(file, ".original canvas", function(image, canvas) {
     try {
       var domCanvas = DOM_CACHE.get('originalCanvas');
-      
-      // Validate dimensions
-      if (!validateImageDimensions(domCanvas.width, domCanvas.height)) {
-        toggleEncodeDropZonePreview(false);
-        return;
-      }
       
       buildDownloadCache('original', domCanvas);
       renderEncodeDropZonePreview(image);
@@ -910,6 +1007,7 @@ function previewEncodeImage() {
       toggleEncodeDropZonePreview(false);
       showError('Error processing image: ' + error.message);
     }
+  });
   });
 }
 
@@ -1060,11 +1158,11 @@ function encodeMessage() {
     var isManual = manualOverride && manualOverride.style.display !== 'none';
     
     if (isManual) {
-      lsbBits = parseInt(document.getElementById('manual-lsb-mode').value);
+      lsbBits = parseInt(document.getElementById('manual-lsb-mode').value, 10);
     } else {
       var autoModeBadge = document.getElementById('auto-mode-badge');
       if (autoModeBadge) {
-        lsbBits = parseInt(autoModeBadge.getAttribute('data-auto-mode') || 1);
+        lsbBits = parseInt(autoModeBadge.getAttribute('data-auto-mode') || 1, 10);
       }
     }
     
@@ -1240,8 +1338,8 @@ function decodeMessage() {
     var isV3 = false;
     
     if (detector) {
-      lsbBits = parseInt(detector.getAttribute('data-detected-mode') || 1);
-      messageLength = parseInt(detector.getAttribute('data-message-length') || 0);
+      lsbBits = parseInt(detector.getAttribute('data-detected-mode') || 1, 10);
+      messageLength = parseInt(detector.getAttribute('data-message-length') || 0, 10);
       isV3 = detector.getAttribute('data-is-v3') === 'true';
     }
     
@@ -1310,14 +1408,14 @@ function decodeMessage() {
       var byte = 0;
       for (var j = 0; j < 8; j++) {
         byte <<= 1;
-        byte |= parseInt(messageBinary[i * 8 + j]);
+        byte |= parseInt(messageBinary[i * 8 + j], 2);
       }
       byteArray[i] = byte;
     }
     
     // Decode UTF-8 bytes to text
     const decoder = TEXT_DECODER;
-    var output = decoder.decode(byteArray);
+    var output = sanitizeDecodedMessage(decoder.decode(byteArray));
     
     // Calculate capacity utilization
     var utilizationPercent = Math.round((messageLength / maxCapacity) * 100);
