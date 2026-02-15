@@ -1164,7 +1164,7 @@ function updateModalWithImageData(width, height, capacity, lsbBitsPerChannel) {
 function previewImage(file, canvasSelector, callback, errorContext) {
   var image = new Image();
   var canvas = document.querySelector(canvasSelector);
-  var context = canvas.getContext('2d');
+  var context = canvas.getContext('2d', { willReadFrequently: true });
 
   if (!file) return;
 
