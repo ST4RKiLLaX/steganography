@@ -104,8 +104,8 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 - Canvas context optimization (willReadFrequently)
 - **Worker Offload**: LSB encode/decode and PNG encoding run in Web Workers (keeps main thread responsive on large images)
 - **OffscreenCanvas**: PNG conversion via `convertToBlob` in Workers (Chrome/Firefox friendly)
-- **Memory Optimization**: Immediate release of intermediate buffers; blob URLs revoked 100ms after download
-- **Download Optimization**: Pre-computed blob caching for instant save prompts
+- **Memory Optimization**: Immediate release of intermediate buffers; blob URLs revoked when cache is invalidated (new encode, tab switch)
+- **Download Optimization**: Pre-computed blob caching for instant save prompts; append link to DOM before click (Chrome-compatible)
 
 **Accessibility:**
 - Keyboard navigation support

@@ -525,6 +525,12 @@ HEADER_VERSION (v2)
 - **Fix:** Download button no longer triggers re-encoding on click
 - **Benefit:** Instant save prompt (browser/OS dependent)
 
+**Chrome Download Fix**
+- **Change:** Removed 100ms `revokeObjectURL` after download click; revoke only when cache is invalidated (new encode, tab switch)
+- **Change:** Append download link to `document.body` before `click()`, remove after
+- **Reason:** Chrome defers blob read; early revoke caused slow/failed downloads; Firefox was unaffected
+- **Benefit:** Reliable fast downloads in Chrome
+
 ---
 
 **Document Version:** 2.0  

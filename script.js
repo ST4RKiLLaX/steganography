@@ -532,12 +532,9 @@ function downloadCachedImage(type) {
   var timestamp = new Date().getTime();
   link.download = 'steganography-' + type + '-' + timestamp + '.png';
   link.href = objectUrl;
+  document.body.appendChild(link);
   link.click();
-  setTimeout(function() {
-    URL.revokeObjectURL(objectUrl);
-    DOWNLOAD_CACHE[type] = null;
-    updateDownloadAvailability();
-  }, 100);
+  link.remove();
 }
 
 // Make downloadCachedImage globally accessible
