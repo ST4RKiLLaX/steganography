@@ -243,7 +243,7 @@ function toBlobInWorker(canvas, onBlob, onError) {
   }
   var width = canvas.width;
   var height = canvas.height;
-  var imageData = canvas.getContext('2d').getImageData(0, 0, width, height);
+  var imageData = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, width, height);
   var buffer = imageData.data.buffer;
   var worker = new Worker('encode-worker.js');
   worker.onmessage = function(e) {
@@ -1164,13 +1164,13 @@ function updateModalWithImageData(width, height, capacity, lsbBitsPerChannel) {
 function previewImage(file, canvasSelector, callback, errorContext) {
   var image = new Image();
   var canvas = document.querySelector(canvasSelector);
-  var context = canvas.getContext('2d', { willReadFrequently: true });
 
   if (!file) return;
 
   image.onload = function() {
     canvas.width = image.width;
     canvas.height = image.height;
+    var context = canvas.getContext('2d', { willReadFrequently: true });
     context.drawImage(image, 0, 0);
     URL.revokeObjectURL(image.src);
     callback(image, canvas);
