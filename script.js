@@ -222,6 +222,28 @@ function setDownloadCache(type, blob, width, height) {
   updateDownloadAvailability();
 }
 
+// Single-flight registry: if the user re-triggers encode/decode while a
+// previous worker is still running, terminate the stale one so we don't
+// leak workers and don't render stale results on top of fresh ones.
+var CURRENT_WORKERS = { encode: null, decode: null };
+
+function startWorker(slot, scriptUrl) {
+  var prev = CURRENT_WORKERS[slot];
+  if (prev) {
+    try { prev.terminate(); } catch (_) { /* noop */ }
+  }
+  var worker = new Worker(scriptUrl);
+  CURRENT_WORKERS[slot] = worker;
+  return worker;
+}
+
+function finishWorker(slot, worker) {
+  if (CURRENT_WORKERS[slot] === worker) {
+    CURRENT_WORKERS[slot] = null;
+  }
+  try { worker.terminate(); } catch (_) { /* noop */ }
+}
+
 // Magic bytes and header parsing (decompression bomb + MIME spoofing mitigation)
 var MAGIC_PNG = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
 var MAGIC_JPEG = new Uint8Array([0xFF, 0xD8, 0xFF]);
@@ -1226,9 +1248,9 @@ function encodeMessage() {
 
     var original = originalContext.getImageData(0, 0, width, height);
     var buffer = original.data.buffer;
-    var worker = new Worker('lsb-encode-worker.js');
+    var worker = startWorker('encode', 'lsb-encode-worker.js');
     worker.onmessage = function(ev) {
-      worker.terminate();
+      finishWorker('encode', worker);
       if (ev.data.type === 'error') {
         DOWNLOAD_CACHE.building['encoded'] = false;
         updateDownloadAvailability();
@@ -1253,7 +1275,7 @@ function encodeMessage() {
       if (encodeButton) encodeButton.disabled = false;
     };
     worker.onerror = function(err) {
-      worker.terminate();
+      finishWorker('encode', worker);
       DOWNLOAD_CACHE.building['encoded'] = false;
       updateDownloadAvailability();
       showError(err.message || 'Worker error');
@@ -1315,9 +1337,9 @@ function decodeMessage() {
     var buffer = original.data.buffer;
     
     decodeWorkerPending = true;
-    var worker = new Worker('lsb-decode-worker.js');
+    var worker = startWorker('decode', 'lsb-decode-worker.js');
     worker.onmessage = function(ev) {
-      worker.terminate();
+      finishWorker('decode', worker);
       if (ev.data.type === 'error') {
         showError(ev.data.message, 'decode');
         if (decodeButton) decodeButton.disabled = false;
@@ -1345,7 +1367,7 @@ function decodeMessage() {
       if (decodeButton) decodeButton.disabled = false;
     };
     worker.onerror = function(err) {
-      worker.terminate();
+      finishWorker('decode', worker);
       showError(err.message || 'Worker error', 'decode');
       if (decodeButton) decodeButton.disabled = false;
     };
