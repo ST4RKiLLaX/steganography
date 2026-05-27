@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; connect-src 'self' https://cdn.jsdelivr.net">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob:; connect-src 'self' https://cdn.jsdelivr.net">
   <title>Steganography Online</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23f8f9fa'/><rect x='6' y='12' width='20' height='14' rx='2' fill='none' stroke='%23495057' stroke-width='2'/><rect x='10' y='8' width='12' height='6' rx='1' fill='none' stroke='%23495057' stroke-width='2'/></svg>">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
@@ -537,34 +537,7 @@
     }
   </style>
 
-  <script>
-    (function() {
-      var html = document.documentElement;
-      var themeToggle = document.getElementById('theme-toggle');
-      var lightIcon = document.querySelector('.theme-icon-light');
-      var darkIcon = document.querySelector('.theme-icon-dark');
-      if (!themeToggle || !lightIcon || !darkIcon) return;
-      var savedTheme = localStorage.getItem('theme') || 'light';
-      html.setAttribute('data-bs-theme', savedTheme);
-      function updateIcons(theme) {
-        if (theme === 'dark') {
-          lightIcon.classList.add('d-none');
-          darkIcon.classList.remove('d-none');
-        } else {
-          lightIcon.classList.remove('d-none');
-          darkIcon.classList.add('d-none');
-        }
-      }
-      updateIcons(savedTheme);
-      themeToggle.addEventListener('click', function() {
-        var currentTheme = html.getAttribute('data-bs-theme');
-        var newTheme = currentTheme === 'light' ? 'dark' : 'light';
-        html.setAttribute('data-bs-theme', newTheme);
-        localStorage.setItem('theme', newTheme);
-        updateIcons(newTheme);
-      });
-    })();
-  </script>
+  <script src="theme.js?v=1"></script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
   <script src="constants.js?v=1"></script>
   <script type="text/JavaScript" src="script.js?v=22"></script>
