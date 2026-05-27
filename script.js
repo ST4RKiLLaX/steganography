@@ -191,13 +191,8 @@ function clearDownloadCache(type) {
   DOWNLOAD_CACHE.building[type] = false;
 }
 
-function clearAllDownloadCache() {
-  clearDownloadCache('encoded');
-  updateDownloadAvailability();
-}
-
 function clearEncodedCaches() {
-  ['encoded'].forEach(type => clearDownloadCache(type));
+  clearDownloadCache('encoded');
   updateDownloadAvailability();
   setEncodedPreviewVisibility(false);
 }
@@ -968,9 +963,8 @@ function previewEncodeImage(file) {
     file = document.querySelector("input[name=baseFile]").files[0];
   }
 
-  clearAllDownloadCache();
+  clearEncodedCaches();
   toggleEncodeDropZonePreview(false);
-  setEncodedPreviewVisibility(false);
   var toggleEncoded = document.getElementById('previewToggleEncoded');
   if (toggleEncoded) {
     toggleEncoded.checked = true;
