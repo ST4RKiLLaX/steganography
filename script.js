@@ -258,72 +258,84 @@ function readImageDimensionsFromHeader(file) {
       reject(new Error('Invalid file.'));
       return;
     }
-    var bytesToRead = 32;
     if (file.size < 24) {
       reject(new Error('File too small to be a valid image.'));
       return;
     }
-    file.slice(0, Math.max(bytesToRead, JPEG_HEADER_SCAN_BYTES)).arrayBuffer()
-      .then(function(buf) {
-        var arr = new Uint8Array(buf);
-        var view = buf.byteLength >= 4 ? new DataView(buf) : null;
 
-        if (arr.length >= 24 && arraysEqual(arr, MAGIC_PNG, 8)) {
-          var w = view.getUint32(16, false);
-          var h = view.getUint32(20, false);
-          resolve({ width: w, height: h, detectedType: 'image/png' });
-          return;
-        }
+    // Phase 1: 32-byte sniff. Enough for PNG (24B) and WebP (30B);
+    // JPEG triggers a separate 64KB reslice to find the SOF marker.
+    file.slice(0, 32).arrayBuffer().then(function(buf) {
+      var arr = new Uint8Array(buf);
 
-        if (arr.length >= 3 && arr[0] === 0xFF && arr[1] === 0xD8 && arr[2] === 0xFF) {
-          for (var i = 2; i < arr.length - 8; i++) {
-            if (arr[i] === 0xFF && JPEG_SOF_MARKERS.indexOf(arr[i + 1]) !== -1) {
-              var h = (arr[i + 5] << 8) | arr[i + 6];
-              var w = (arr[i + 7] << 8) | arr[i + 8];
-              resolve({ width: w, height: h, detectedType: 'image/jpeg' });
-              return;
-            }
-          }
-          reject(new Error('Invalid JPEG: no SOF marker found.'));
-          return;
-        }
+      if (arr.length >= 24 && arraysEqual(arr, MAGIC_PNG, 8)) {
+        var view = new DataView(buf);
+        resolve({
+          width: view.getUint32(16, false),
+          height: view.getUint32(20, false),
+          detectedType: 'image/png'
+        });
+        return;
+      }
 
-        if (arr.length >= 12 && arraysEqual(arr, MAGIC_WEBP_RIFF, 4) && arraysEqual(arr.subarray(8), MAGIC_WEBP_WEBP, 4)) {
-          if (arr.length < 30) {
-            reject(new Error('Invalid WebP: header truncated.'));
-            return;
-          }
-          var vp8 = arr[12] === 0x56 && arr[13] === 0x50 && arr[14] === 0x38;
-          var vp8l = vp8 && arr[15] === 0x4C;
-          var vp8x = vp8 && arr[15] === 0x58;
-          var w, h;
-          if (vp8x && arr.length >= 30) {
-            // Width and height are 24-bit (3 bytes) each; spec uses "Minus One", so add 1
-            w = (arr[24] | (arr[25] << 8) | (arr[26] << 16)) + 1;
-            h = (arr[27] | (arr[28] << 8) | (arr[29] << 16)) + 1;
-          } else if (vp8l && arr.length >= 25) {
-            var val = arr[21] | (arr[22] << 8) | (arr[23] << 16) | ((arr[24] & 0x3F) << 24);
-            w = (val & 0x3FFF) + 1;
-            h = ((val >> 14) & 0x3FFF) + 1;
-          } else if (vp8 && arr[15] === 0x20 && arr.length >= 30) {
-            // VP8 lossy: 3-byte frame tag (20-22), start code 9D 01 2A (23-25),
-            // then 14-bit width/height at 26-27 and 28-29, little-endian.
-            w = (arr[26] | (arr[27] << 8)) & 0x3FFF;
-            h = (arr[28] | (arr[29] << 8)) & 0x3FFF;
-          } else {
-            reject(new Error('Invalid WebP: unsupported chunk type.'));
-            return;
-          }
-          resolve({ width: w, height: h, detectedType: 'image/webp' });
-          return;
-        }
+      if (arr.length >= 12 && arraysEqual(arr, MAGIC_WEBP_RIFF, 4) && arraysEqual(arr.subarray(8), MAGIC_WEBP_WEBP, 4)) {
+        parseWebpDimensions(arr, resolve, reject);
+        return;
+      }
 
-        reject(new Error('Invalid file: not a valid PNG, JPEG, or WebP image.'));
-      })
-      .catch(function(err) {
-        reject(err);
-      });
+      if (arr[0] === 0xFF && arr[1] === 0xD8 && arr[2] === 0xFF) {
+        // Phase 2 (JPEG only): SOF marker can be anywhere in the first
+        // ~64KB of metadata. Reslice and scan.
+        file.slice(0, JPEG_HEADER_SCAN_BYTES).arrayBuffer().then(function(jbuf) {
+          parseJpegDimensions(new Uint8Array(jbuf), resolve, reject);
+        }).catch(reject);
+        return;
+      }
+
+      reject(new Error('Invalid file: not a valid PNG, JPEG, or WebP image.'));
+    }).catch(reject);
   });
+}
+
+function parseJpegDimensions(arr, resolve, reject) {
+  for (var i = 2; i < arr.length - 8; i++) {
+    if (arr[i] === 0xFF && JPEG_SOF_MARKERS.indexOf(arr[i + 1]) !== -1) {
+      var h = (arr[i + 5] << 8) | arr[i + 6];
+      var w = (arr[i + 7] << 8) | arr[i + 8];
+      resolve({ width: w, height: h, detectedType: 'image/jpeg' });
+      return;
+    }
+  }
+  reject(new Error('Invalid JPEG: no SOF marker found.'));
+}
+
+function parseWebpDimensions(arr, resolve, reject) {
+  if (arr.length < 30) {
+    reject(new Error('Invalid WebP: header truncated.'));
+    return;
+  }
+  var vp8 = arr[12] === 0x56 && arr[13] === 0x50 && arr[14] === 0x38;
+  var vp8l = vp8 && arr[15] === 0x4C;
+  var vp8x = vp8 && arr[15] === 0x58;
+  var w, h;
+  if (vp8x) {
+    // VP8X: width/height are 24-bit "Minus One" at 24-26 and 27-29.
+    w = (arr[24] | (arr[25] << 8) | (arr[26] << 16)) + 1;
+    h = (arr[27] | (arr[28] << 8) | (arr[29] << 16)) + 1;
+  } else if (vp8l) {
+    var val = arr[21] | (arr[22] << 8) | (arr[23] << 16) | ((arr[24] & 0x3F) << 24);
+    w = (val & 0x3FFF) + 1;
+    h = ((val >> 14) & 0x3FFF) + 1;
+  } else if (vp8 && arr[15] === 0x20) {
+    // VP8 lossy: 3-byte frame tag (20-22), start code 9D 01 2A (23-25),
+    // then 14-bit width/height at 26-27 and 28-29, little-endian.
+    w = (arr[26] | (arr[27] << 8)) & 0x3FFF;
+    h = (arr[28] | (arr[29] << 8)) & 0x3FFF;
+  } else {
+    reject(new Error('Invalid WebP: unsupported chunk type.'));
+    return;
+  }
+  resolve({ width: w, height: h, detectedType: 'image/webp' });
 }
 
 function validateMagicBytesAndDimensions(file, context) {
