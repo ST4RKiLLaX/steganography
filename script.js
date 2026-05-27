@@ -1071,7 +1071,6 @@ function previewEncodeImage(file) {
       previewImage(file, '.original canvas', function(image, canvas) {
         try {
           var domCanvas = DOM_CACHE.get('originalCanvas');
-          buildDownloadCache('original', domCanvas);
           renderEncodeDropZonePreview(image);
           var lsbBits = 1;
           var availablePixels = (domCanvas.width * domCanvas.height) - SENTINEL_PIXELS;
