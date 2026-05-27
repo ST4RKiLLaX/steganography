@@ -1196,7 +1196,6 @@ function encodeMessage() {
     if (totalMessageBits > BINARY_PREVIEW_BITS) {
       binaryPreview += ' ... truncated (' + totalMessageBits.toLocaleString() + ' bits total)';
     }
-    document.querySelector('.binary .card-body').textContent = binaryPreview;
 
     messageCanvas.width = width;
     messageCanvas.height = height;
@@ -1229,6 +1228,7 @@ function encodeMessage() {
       }
       nulledCanvas.width = 0;
       nulledCanvas.height = 0;
+      document.querySelector('.binary .card-body').textContent = binaryPreview;
       document.querySelector('.binary').style.display = 'block';
       if (encodeButton) encodeButton.disabled = false;
     };
