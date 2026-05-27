@@ -1,8 +1,7 @@
-// Constants and bit helpers shared with workers live in constants.js
-// (loaded by index.html before this script). Workers load it via
-// importScripts so the values cannot drift between main thread and worker.
+// Shared sentinel/LSB constants and bit helpers come from constants.js
+// (SENTINEL_BITS, SENTINEL_PIXELS, MAGIC_V3, MIN_LSB_BITS, MAX_LSB_BITS,
+//  MAX_MESSAGE_LENGTH, MAX_THEORETICAL_EMBED_CAPACITY_BYTES, getBit, getBits).
 
-// Security Configuration
 const MAX_IMAGE_DIMENSION = 10000;         // 10,000 x 10,000 px max
 const MAX_FILE_SIZE = 52428800;            // 50MB file size limit
 const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
@@ -10,7 +9,8 @@ const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 // Binary display: truncate to avoid DoS from huge strings
 const BINARY_PREVIEW_BITS = 4096;
 
-const FORMAT_VERSION = 3;
+// v3 Format - Fixed Sentinel + Variable Message
+const FORMAT_VERSION = 3;                  // Current format version
 
 // Performance: Reusable encoder/decoder (stateless)
 const TEXT_ENCODER = new TextEncoder();
@@ -210,15 +210,15 @@ function setDownloadCache(type, blob, width, height) {
   updateDownloadAvailability();
 }
 
-// Single-flight registry: if the user re-triggers encode/decode while a
-// previous worker is still running, terminate the stale one so we don't
-// leak workers and don't render stale results on top of fresh ones.
+// Single-flight worker registry: starting a new worker in a given slot
+// terminates any in-flight predecessor. Prevents stale results from rapid
+// re-clicks (encode/upload churn).
 var CURRENT_WORKERS = { encode: null, decode: null };
 
 function startWorker(slot, scriptUrl) {
-  var prev = CURRENT_WORKERS[slot];
-  if (prev) {
-    try { prev.terminate(); } catch (_) { /* noop */ }
+  var existing = CURRENT_WORKERS[slot];
+  if (existing) {
+    existing.terminate();
   }
   var worker = new Worker(scriptUrl);
   CURRENT_WORKERS[slot] = worker;
@@ -229,7 +229,7 @@ function finishWorker(slot, worker) {
   if (CURRENT_WORKERS[slot] === worker) {
     CURRENT_WORKERS[slot] = null;
   }
-  try { worker.terminate(); } catch (_) { /* noop */ }
+  worker.terminate();
 }
 
 // Magic bytes and header parsing (decompression bomb + MIME spoofing mitigation)
