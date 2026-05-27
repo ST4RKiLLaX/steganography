@@ -1168,11 +1168,13 @@ function encodeMessage() {
       return;
     }
 
-    // Check if the image is big enough to hide the message
-    var requiredBits = SENTINEL_BITS + (messageBytes.length * 8);
-    if (requiredBits > (availablePixels * lsbBits * 3 + SENTINEL_BITS)) {
-      showError('Message too long! Your message is ' + messageBytes.length.toLocaleString() + 
-                ' bytes but this image can only hide ' + maxCapacity.toLocaleString() + 
+    // Message and sentinel are stored in disjoint pixel ranges, so the
+    // capacity check just compares message bits to the message-pixel slot.
+    var totalMessageBits = messageBytes.length * 8;
+    var messageCapacityBits = availablePixels * lsbBits * 3;
+    if (totalMessageBits > messageCapacityBits) {
+      showError('Message too long! Your message is ' + messageBytes.length.toLocaleString() +
+                ' bytes but this image can only hide ' + maxCapacity.toLocaleString() +
                 ' bytes with ' + lsbBits + '-LSB mode. Please use a larger image or shorter message.');
       return;
     }
@@ -1182,7 +1184,6 @@ function encodeMessage() {
       return;
     }
 
-    var totalMessageBits = messageBytes.length * 8;
     var previewBits = Math.min(BINARY_PREVIEW_BITS, totalMessageBits);
     var magicBinary = MAGIC_V3;
     var modeBinary = lsbBits.toString(2).padStart(4, '0');
