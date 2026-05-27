@@ -1,15 +1,4 @@
-var SENTINEL_BITS = 56;
-var SENTINEL_PIXELS = 19;
-var MAGIC_V3 = '1010101001010101';
-
-function getBit(bytes, bitIndex) {
-  return (bytes[bitIndex >> 3] >> (7 - (bitIndex & 7))) & 1;
-}
-function getBits(bytes, bitIndex, n) {
-  var result = 0;
-  for (var i = 0; i < n; i++) result = (result << 1) | getBit(bytes, bitIndex + i);
-  return result;
-}
+importScripts('constants.js');
 
 self.onmessage = function(e) {
   if (e.data.type !== 'encode') return;

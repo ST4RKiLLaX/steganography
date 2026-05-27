@@ -1,7 +1,9 @@
+// Constants and bit helpers shared with workers live in constants.js
+// (loaded by index.html before this script). Workers load it via
+// importScripts so the values cannot drift between main thread and worker.
+
 // Security Configuration
-const MAX_MESSAGE_LENGTH = 10000000;      // 10MB byte limit (UTF-8 encoded)
 const MAX_IMAGE_DIMENSION = 10000;         // 10,000 x 10,000 px max
-const MAX_THEORETICAL_EMBED_CAPACITY_BYTES = 150000000;  // ~150MB, allows max 10k×10k at 4-LSB
 const MAX_FILE_SIZE = 52428800;            // 50MB file size limit
 const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
@@ -15,23 +17,7 @@ var FILE_SIGNATURES = {
 // Binary display: truncate to avoid DoS from huge strings
 const BINARY_PREVIEW_BITS = 4096;
 
-// v3 Format - Fixed Sentinel + Variable Message
-const FORMAT_VERSION = 3;                  // Current format version
-const SENTINEL_BITS = 56;                  // Fixed 1-LSB sentinel (magic + mode + reserved + length)
-const SENTINEL_PIXELS = 19;                // ceil(56 / 3) pixels needed for sentinel
-const MAGIC_V3 = '1010101001010101';       // 0xAA55 (16-bit magic number)
-const MIN_LSB_BITS = 1;                    // Minimum LSB mode
-const MAX_LSB_BITS = 4;                    // Maximum LSB mode
-
-// Bit extraction from bytes (avoids building giant binary strings)
-function getBit(bytes, bitIndex) {
-  return (bytes[bitIndex >> 3] >> (7 - (bitIndex & 7))) & 1;
-}
-function getBits(bytes, bitIndex, n) {
-  var result = 0;
-  for (var i = 0; i < n; i++) result = (result << 1) | getBit(bytes, bitIndex + i);
-  return result;
-}
+const FORMAT_VERSION = 3;
 
 // Performance: Reusable encoder/decoder (stateless)
 const TEXT_ENCODER = new TextEncoder();
@@ -234,63 +220,6 @@ function setDownloadCache(type, blob, width, height) {
   };
   DOWNLOAD_CACHE.building[type] = false;
   updateDownloadAvailability();
-}
-
-function toBlobInWorker(canvas, onBlob, onError) {
-  if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
-    onError('Web Workers and OffscreenCanvas are required. Please use a modern browser.');
-    return;
-  }
-  var width = canvas.width;
-  var height = canvas.height;
-  var imageData = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, width, height);
-  var buffer = imageData.data.buffer;
-  var worker = new Worker('encode-worker.js');
-  worker.onmessage = function(e) {
-    worker.terminate();
-    if (e.data.type === 'error') {
-      onError(e.data.message);
-      return;
-    }
-    onBlob(e.data.blob, e.data.width, e.data.height);
-  };
-  worker.onerror = function(err) {
-    worker.terminate();
-    onError(err.message || 'Worker error');
-  };
-  worker.postMessage({ type: 'toBlob', width: width, height: height, data: buffer }, [buffer]);
-}
-
-function buildDownloadCache(type, canvas) {
-  if (!canvas) {
-    clearDownloadCache(type);
-    showError('Download image is not available yet. Please try again after encoding.');
-    updateDownloadAvailability();
-    return;
-  }
-  
-  DOWNLOAD_CACHE.building[type] = true;
-  updateDownloadAvailability();
-  
-  if (type === 'encoded') {
-    toBlobInWorker(canvas, function(blob, w, h) {
-      setDownloadCache(type, blob, w, h);
-    }, function(errMsg) {
-      clearDownloadCache(type);
-      showError(errMsg);
-      updateDownloadAvailability();
-    });
-  } else {
-    canvas.toBlob(function(blob) {
-      if (!blob) {
-        clearDownloadCache(type);
-        showError('Failed to prepare downloadable image. Please try again.');
-        updateDownloadAvailability();
-        return;
-      }
-      setDownloadCache(type, blob, canvas.width, canvas.height);
-    }, 'image/png');
-  }
 }
 
 // Magic bytes and header parsing (decompression bomb + MIME spoofing mitigation)

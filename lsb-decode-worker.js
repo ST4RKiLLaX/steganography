@@ -1,10 +1,4 @@
-var SENTINEL_BITS = 56;
-var SENTINEL_PIXELS = 19;
-var MAGIC_V3 = '1010101001010101';
-var MIN_LSB_BITS = 1;
-var MAX_LSB_BITS = 4;
-var MAX_MESSAGE_LENGTH = 10000000;
-var MAX_THEORETICAL_EMBED_CAPACITY_BYTES = 150000000;
+importScripts('constants.js');
 
 var TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
