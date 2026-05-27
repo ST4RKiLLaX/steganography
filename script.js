@@ -7,13 +7,6 @@ const MAX_IMAGE_DIMENSION = 10000;         // 10,000 x 10,000 px max
 const MAX_FILE_SIZE = 52428800;            // 50MB file size limit
 const ALLOWED_FILE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
-// File signatures (magic bytes) for format validation - more reliable than file.type
-var FILE_SIGNATURES = {
-  png:  [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
-  jpeg: [0xFF, 0xD8, 0xFF],
-  webp: [0x52, 0x49, 0x46, 0x46]  // RIFF at 0; WEBP at 8-11
-};
-
 // Binary display: truncate to avoid DoS from huge strings
 const BINARY_PREVIEW_BITS = 4096;
 
@@ -353,63 +346,20 @@ function validateMagicBytesAndDimensions(file, context) {
   });
 }
 
-// Validation Functions
-function checkFileSignature(buffer) {
-  var bytes = new Uint8Array(buffer);
-  if (bytes.length < 12) return false;
-
-  var i;
-  for (i = 0; i < FILE_SIGNATURES.png.length; i++) {
-    if (bytes[i] !== FILE_SIGNATURES.png[i]) break;
-  }
-  if (i === FILE_SIGNATURES.png.length) return true;
-
-  for (i = 0; i < FILE_SIGNATURES.jpeg.length; i++) {
-    if (bytes[i] !== FILE_SIGNATURES.jpeg[i]) break;
-  }
-  if (i === FILE_SIGNATURES.jpeg.length) return true;
-
-  for (i = 0; i < FILE_SIGNATURES.webp.length; i++) {
-    if (bytes[i] !== FILE_SIGNATURES.webp[i]) break;
-  }
-  if (i === FILE_SIGNATURES.webp.length &&
-      bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
-    if (bytes.length < 16) return false;
-    var vp8  = bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x20;
-    var vp8l = bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x4C;
-    var vp8x = bytes[12] === 0x56 && bytes[13] === 0x50 && bytes[14] === 0x38 && bytes[15] === 0x58;
-    if (vp8 || vp8l || vp8x) return true;
-  }
-
-  return false;
-}
-
-function validateFileType(file, context, onValid) {
+// Synchronous pre-flight: just null + size checks. The deeper magic-byte
+// and dimension validation happens in validateMagicBytesAndDimensions,
+// which reads the file header once and is strictly stronger than a
+// 16-byte signature sniff.
+function validateFileBasics(file, context) {
   if (!file) {
     showError('No file selected. Please choose an image file.', context);
-    if (onValid) onValid(false);
-    return;
+    return false;
   }
   if (file.size > MAX_FILE_SIZE) {
     showError('File too large! Maximum file size: ' + (MAX_FILE_SIZE / 1048576).toFixed(0) + 'MB. Your file: ' + (file.size / 1048576).toFixed(1) + 'MB.', context);
-    if (onValid) onValid(false);
-    return;
+    return false;
   }
-
-  var reader = new FileReader();
-  reader.onload = function() {
-    if (!checkFileSignature(reader.result)) {
-      showError('Invalid file type. Please select a PNG, JPEG, or WebP image.', context);
-      if (onValid) onValid(false);
-      return;
-    }
-    if (onValid) onValid(true);
-  };
-  reader.onerror = function() {
-    showError('Could not read file. Please try again.', context);
-    if (onValid) onValid(false);
-  };
-  reader.readAsArrayBuffer(file.slice(0, 16));
+  return true;
 }
 
 function validateImageDimensions(width, height) {
@@ -687,6 +637,9 @@ function previewDecodeImage(file) {
   }
 
   toggleDecodeDropZonePreview(false);
+
+  if (!validateFileBasics(file, 'decode')) return;
+
   validateMagicBytesAndDimensions(file, 'decode').then(function(headerResult) {
     if (!headerResult) return;
     previewImage(file, '.decode canvas', function(image) {
@@ -1010,37 +963,35 @@ function previewEncodeImage(file) {
   if (toggleEncoded) {
     toggleEncoded.checked = true;
   }
-  
-  validateFileType(file, undefined, function(valid) {
-    if (!valid) return;
 
-    var errorElement = DOM_CACHE.get('errorElement');
-    if (errorElement) errorElement.style.display = 'none';
+  if (!validateFileBasics(file)) return;
 
-    validateMagicBytesAndDimensions(file).then(function(headerResult) {
-      if (!headerResult) return;
-      previewImage(file, '.original canvas', function(image, canvas) {
-        try {
-          var domCanvas = DOM_CACHE.get('originalCanvas');
-          renderEncodeDropZonePreview(image);
-          var lsbBits = 1;
-          var availablePixels = (domCanvas.width * domCanvas.height) - SENTINEL_PIXELS;
-          var totalBits = availablePixels * lsbBits * 3;
-          var capacity = Math.floor(totalBits / 8);
-          if (!validateCapacity(capacity)) return;
-          var capacityBadge = document.getElementById('capacity-badge');
-          if (capacityBadge) {
-            capacityBadge.style.display = 'inline-block';
-            capacityBadge.textContent = '💾 0 / ' + capacity.toLocaleString() + ' bytes (' + lsbBits + '-LSB)';
-          }
-          updateModalWithImageData(domCanvas.width, domCanvas.height, capacity, lsbBits);
-          var messageText = DOM_CACHE.get('messageTextarea')?.value || '';
-          if (messageText) updateMessageAnalysis(messageText);
-        } catch (error) {
-          toggleEncodeDropZonePreview(false);
-          showError('Error processing image: ' + error.message);
+  var errorElement = DOM_CACHE.get('errorElement');
+  if (errorElement) errorElement.style.display = 'none';
+
+  validateMagicBytesAndDimensions(file).then(function(headerResult) {
+    if (!headerResult) return;
+    previewImage(file, '.original canvas', function(image, canvas) {
+      try {
+        var domCanvas = DOM_CACHE.get('originalCanvas');
+        renderEncodeDropZonePreview(image);
+        var lsbBits = 1;
+        var availablePixels = (domCanvas.width * domCanvas.height) - SENTINEL_PIXELS;
+        var totalBits = availablePixels * lsbBits * 3;
+        var capacity = Math.floor(totalBits / 8);
+        if (!validateCapacity(capacity)) return;
+        var capacityBadge = document.getElementById('capacity-badge');
+        if (capacityBadge) {
+          capacityBadge.style.display = 'inline-block';
+          capacityBadge.textContent = '💾 0 / ' + capacity.toLocaleString() + ' bytes (' + lsbBits + '-LSB)';
         }
-      });
+        updateModalWithImageData(domCanvas.width, domCanvas.height, capacity, lsbBits);
+        var messageText = DOM_CACHE.get('messageTextarea')?.value || '';
+        if (messageText) updateMessageAnalysis(messageText);
+      } catch (error) {
+        toggleEncodeDropZonePreview(false);
+        showError('Error processing image: ' + error.message);
+      }
     });
   });
 }
