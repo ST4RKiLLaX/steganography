@@ -361,9 +361,11 @@ function readImageDimensionsFromHeader(file) {
             var val = arr[21] | (arr[22] << 8) | (arr[23] << 16) | ((arr[24] & 0x3F) << 24);
             w = (val & 0x3FFF) + 1;
             h = ((val >> 14) & 0x3FFF) + 1;
-          } else if (vp8 && arr[15] === 0x20 && arr.length >= 27) {
-            w = arr[23] | ((arr[24] & 0x3F) << 8);
-            h = (arr[24] >> 6) | (arr[25] << 2) | ((arr[26] & 0x0F) << 10);
+          } else if (vp8 && arr[15] === 0x20 && arr.length >= 30) {
+            // VP8 lossy: 3-byte frame tag (20-22), start code 9D 01 2A (23-25),
+            // then 14-bit width/height at 26-27 and 28-29, little-endian.
+            w = (arr[26] | (arr[27] << 8)) & 0x3FFF;
+            h = (arr[28] | (arr[29] << 8)) & 0x3FFF;
           } else {
             reject(new Error('Invalid WebP: unsupported chunk type.'));
             return;
