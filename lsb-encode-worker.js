@@ -69,13 +69,14 @@ self.onmessage = function(e) {
 
     var canvas = new OffscreenCanvas(width, height);
     var ctx = canvas.getContext('2d');
-    var imageData = new ImageData(pixel, width, height);
-    ctx.putImageData(imageData, 0, 0);
-    var resultData = ctx.getImageData(0, 0, width, height);
-    var resultBuffer = resultData.data.buffer;
+    ctx.putImageData(new ImageData(pixel, width, height), 0, 0);
+    var resultBuffer = pixel.buffer;
 
     canvas.convertToBlob({ type: 'image/png' }).then(function(blob) {
-      self.postMessage({ type: 'result', blob: blob, width: width, height: height, data: resultBuffer }, [resultBuffer]);
+      self.postMessage(
+        { type: 'result', blob: blob, width: width, height: height, data: resultBuffer },
+        [resultBuffer]
+      );
     }).catch(function(err) {
       self.postMessage({ type: 'error', message: err.message || 'Failed to encode PNG.' });
     });
