@@ -56,12 +56,13 @@ self.onmessage = function(e) {
       for (var offset = 0; offset < 3; offset++) {
         if (messageCounter >= totalMessageBits) break;
         var remaining = totalMessageBits - messageCounter;
-        var bits = remaining >= lsbBits
-          ? getBits(messageBytes, messageCounter, lsbBits)
-          : getBits(messageBytes, messageCounter, remaining);
-        pixel[i + offset] = (pixel[i + offset] | bits) & 0xFF;
-        messageCounter += lsbBits;
-        if (messageCounter >= totalMessageBits) break;
+        var chunkBits = remaining >= lsbBits ? lsbBits : remaining;
+        // Left-shift partial chunks so they occupy the high positions of the
+        // lsbBits-wide slot. The decoder reads the full slot MSB-first and
+        // trims to messageLength*8 bits, dropping the trailing garbage.
+        var bits = getBits(messageBytes, messageCounter, chunkBits) << (lsbBits - chunkBits);
+        pixel[i + offset] = pixel[i + offset] | bits;
+        messageCounter += chunkBits;
       }
       if (messageCounter >= totalMessageBits) break;
     }

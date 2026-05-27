@@ -75,35 +75,41 @@ self.onmessage = function(e) {
       return;
     }
 
-    var messageBinaryArray = [];
+    var byteArray = new Uint8Array(messageLength);
     var mask = (1 << lsbBits) - 1;
-    var requiredBits = messageLength * 8;
+    var totalBits = messageLength * 8;
+    var bitBuf = 0;
+    var bitCount = 0;
+    var byteIdx = 0;
+    var producedBits = 0;
 
-    for (var i = SENTINEL_PIXELS * 4; i < pixel.length && messageBinaryArray.length * lsbBits < requiredBits; i += 4) {
+    outer: for (var i = SENTINEL_PIXELS * 4; i < pixel.length; i += 4) {
       for (var offset = 0; offset < 3; offset++) {
-        if (messageBinaryArray.length * lsbBits >= requiredBits) break;
-        var extracted = pixel[i + offset] & mask;
-        var binary = extracted.toString(2).padStart(lsbBits, '0');
-        messageBinaryArray.push(binary);
+        var chunk = pixel[i + offset] & mask;
+        var take = lsbBits;
+        var remaining = totalBits - producedBits;
+        if (remaining < lsbBits) {
+          // Partial tail chunk: encoder left-shifted message bits into the
+          // high positions of the slot, so drop the low (lsbBits - remaining)
+          // garbage bits.
+          take = remaining;
+          chunk = chunk >>> (lsbBits - take);
+        }
+        bitBuf = (bitBuf << take) | chunk;
+        bitCount += take;
+        producedBits += take;
+        while (bitCount >= 8) {
+          bitCount -= 8;
+          byteArray[byteIdx++] = (bitBuf >>> bitCount) & 0xFF;
+          if (byteIdx === messageLength) break outer;
+        }
+        if (producedBits >= totalBits) break outer;
       }
     }
-    var messageBinary = messageBinaryArray.join('');
 
-    if (messageBinary.length < requiredBits) {
+    if (byteIdx < messageLength) {
       self.postMessage({ type: 'error', message: 'Incomplete message data in image.' });
       return;
-    }
-
-    messageBinary = messageBinary.substring(0, requiredBits);
-
-    var byteArray = new Uint8Array(messageLength);
-    for (var i = 0; i < messageLength; i++) {
-      var byte = 0;
-      for (var j = 0; j < 8; j++) {
-        byte <<= 1;
-        byte |= parseInt(messageBinary[i * 8 + j], 2);
-      }
-      byteArray[i] = byte;
     }
 
     var output = sanitizeDecodedMessage(TEXT_DECODER.decode(byteArray));
