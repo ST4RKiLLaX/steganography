@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Steganography Tests</title>
+  <style>
+    body { font-family: monospace; margin: 1rem; }
+    h1 { font-size: 1.1rem; }
+    #summary { padding: 0.5rem; margin-bottom: 1rem; border-radius: 4px; }
+    #summary.pending { background: #fff3cd; }
+    #summary.pass { background: #d1e7dd; }
+    #summary.fail { background: #f8d7da; }
+    .case { padding: 0.15rem 0.35rem; border-left: 3px solid #ccc; margin: 0.1rem 0; }
+    .case.pass { border-left-color: #198754; }
+    .case.fail { border-left-color: #dc3545; background: #fff5f5; }
+    .case.fail .reason { color: #b02a37; }
+  </style>
+</head>
+<body>
+  <h1>Steganography encode/decode round-trip tests</h1>
+  <p>
+    Drives the workers directly against synthetic ImageData (no PNG round-trip).
+    Pairs the Phase 1a encoder fix with the Phase 2a bit-buffer decoder; covers
+    every LSB mode and the previously-broken 3-LSB tails (messageLength % 3 != 0).
+  </p>
+  <div id="summary" class="pending">Running...</div>
+  <div id="results"></div>
+
+  <script src="constants.js?v=2"></script>
+  <script>
+    const summary = document.getElementById('summary');
+    const results = document.getElementById('results');
+    let pass = 0;
+    let fail = 0;
+
+    function reportCase(label, ok, reason) {
+      const div = document.createElement('div');
+      div.className = 'case ' + (ok ? 'pass' : 'fail');
+      div.textContent = (ok ? 'PASS: ' : 'FAIL: ') + label;
+      if (!ok && reason) {
+        const r = document.createElement('div');
+        r.className = 'reason';
+        r.textContent = '  -> ' + reason;
+        div.appendChild(r);
+      }
+      results.appendChild(div);
+      if (ok) pass++; else fail++;
+    }
+
+    // Run a single encode in a worker; resolves with { buffer, width, height }.
+    function runEncode(pixels, width, height, messageBytes, lsbBits) {
+      return new Promise((resolve, reject) => {
+        const worker = new Worker('lsb-encode-worker.js');
+        worker.onmessage = (ev) => {
+          worker.terminate();
+          if (ev.data.type === 'error') {
+            reject(new Error(ev.data.message));
+            return;
+          }
+          resolve({ buffer: ev.data.data, width: ev.data.width, height: ev.data.height });
+        };
+        worker.onerror = (err) => {
+          worker.terminate();
+          reject(new Error(err.message || 'encode worker error'));
+        };
+        // Clone pixels so the caller can reuse the original buffer.
+        const copy = new Uint8ClampedArray(pixels);
+        worker.postMessage({
+          type: 'encode',
+          imageData: { width, height, data: copy.buffer },
+          messageBytes: Array.from(messageBytes),
+          lsbBits: lsbBits
+        }, [copy.buffer]);
+      });
+    }
+
+    function runDecode(buffer, width, height) {
+      return new Promise((resolve, reject) => {
+        const worker = new Worker('lsb-decode-worker.js');
+        worker.onmessage = (ev) => {
+          worker.terminate();
+          if (ev.data.type === 'error') {
+            reject(new Error(ev.data.message));
+            return;
+          }
+          resolve(ev.data);
+        };
+        worker.onerror = (err) => {
+          worker.terminate();
+          reject(new Error(err.message || 'decode worker error'));
+        };
+        worker.postMessage({
+          type: 'decode',
+          imageData: { width, height, data: buffer }
+        }, [buffer]);
+      });
+    }
+
+    // Fill with a cheap LCG-style pattern. We don't need crypto strength
+    // (which caps at 64KB per call anyway) - the encoder clears LSB slots
+    // before writing, so the original pixel content is irrelevant to
+    // correctness. Just need varied, deterministic bytes.
+    function makePixels(width, height) {
+      const px = new Uint8ClampedArray(width * height * 4);
+      let seed = 0x12345678;
+      for (let i = 0; i < px.length; i += 4) {
+        seed = (seed * 1664525 + 1013904223) | 0;
+        px[i] = seed & 0xFF;
+        px[i + 1] = (seed >>> 8) & 0xFF;
+        px[i + 2] = (seed >>> 16) & 0xFF;
+        px[i + 3] = 255;  // opaque alpha
+      }
+      return px;
+    }
+
+    // For byte-exact verification we use a UTF-8-safe payload. The worker
+    // validates output via TextDecoder({fatal:true}), so we must encode an
+    // actual UTF-8 string.
+    async function roundTripText(label, text, lsbBits, width, height) {
+      try {
+        const pixels = makePixels(width, height);
+        const msg = new TextEncoder().encode(text);
+        const enc = await runEncode(pixels, width, height, msg, lsbBits);
+        const dec = await runDecode(enc.buffer, enc.width, enc.height);
+        if (dec.lsbBits !== lsbBits) {
+          reportCase(label, false, 'detected lsbBits=' + dec.lsbBits + ', expected ' + lsbBits);
+          return;
+        }
+        if (dec.messageLength !== msg.length) {
+          reportCase(label, false, 'decoded length ' + dec.messageLength + ' != ' + msg.length);
+          return;
+        }
+        if (dec.output !== text) {
+          reportCase(label, false, 'output mismatch (len ' + dec.output.length + ' vs ' + text.length + ')');
+          return;
+        }
+        reportCase(label, true);
+      } catch (err) {
+        reportCase(label, false, err.message);
+      }
+    }
+
+    function repeatText(seed, byteLength) {
+      // Build an ASCII payload of exact byte length. ASCII is 1:1 with UTF-8.
+      let out = '';
+      while (out.length < byteLength) out += seed;
+      return out.slice(0, byteLength);
+    }
+
+    async function main() {
+      // Skip len=0 (decoder rejects empty messages by design).
+      const lengths = [1, 2, 3, 4, 5, 7, 8, 16, 33, 64, 100, 257, 1000, 4096];
+      const modes = [1, 2, 3, 4];
+      const width = 200;
+      const height = 200;  // 40000 pixels -> plenty of capacity for all sizes
+
+      for (const lsb of modes) {
+        for (const len of lengths) {
+          const text = repeatText('Hello, steganography! ', len);
+          await roundTripText(`lsb=${lsb} len=${len}`, text, lsb, width, height);
+        }
+      }
+
+      // 3-LSB regression coverage: every length 1..30 to cover all three
+      // remainder classes (len % 3) of the previously-buggy tail logic.
+      for (let len = 1; len <= 30; len++) {
+        const text = repeatText('xyz123abc', len);
+        await roundTripText(`regression 3-LSB len=${len} (len%3=${len % 3})`, text, 3, width, height);
+      }
+
+      // UTF-8 multibyte spot check.
+      await roundTripText('utf8 emoji 2-LSB', '\u{1F600}\u{1F47B}\u{1F4A9}', 2, width, height);
+      await roundTripText('utf8 mixed 3-LSB', 'naïve café résumé', 3, width, height);
+
+      summary.className = fail === 0 ? 'pass' : 'fail';
+      summary.textContent = fail === 0
+        ? `All ${pass} cases passed.`
+        : `${fail} case(s) failed, ${pass} passed.`;
+    }
+
+    main().catch((err) => {
+      summary.className = 'fail';
+      summary.textContent = 'Test runner crashed: ' + (err && err.message || err);
+    });
+  </script>
+</body>
+</html>
