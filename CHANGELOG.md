@@ -533,6 +533,17 @@ HEADER_VERSION (v2)
 
 ---
 
+### I. Educational Content Refinements (October 2026)
+
+**In-Page Explainer Cards**
+- **Change:** Added a "What is steganography?" card between the page header and the Encode/Decode tabs, with a nested "What is LSB (Least Significant Bit) Steganography?" card
+- **Change:** Each card has a short summary plus a collapsible "Tell me more" section
+- **Removed:** "How LSB Steganography Works" modal; its content now lives in the LSB card's "Tell me more" section
+- **Change:** Capacity badge now expands and scrolls to the LSB card instead of opening the modal
+- **Technical:** `updateModalWithImageData()` renamed to `updateLsbInfoWithImageData()`; live image stats render into `#lsbImageInfo` and `#lsbCalcSteps`
+
+---
+
 **Document Version:** 2.0  
 **Date:** January 2026  
 **Status:** Final

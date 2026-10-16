@@ -498,6 +498,15 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
   
+  var capacityBadge = document.getElementById('capacity-badge');
+  var lsbCollapse = document.getElementById('lsbCollapse');
+  if (capacityBadge && lsbCollapse) {
+    capacityBadge.addEventListener('click', function() {
+      bootstrap.Collapse.getOrCreateInstance(lsbCollapse, { toggle: false }).show();
+      document.getElementById('lsbCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
   // Manual override button handlers
   var overrideBtn = document.getElementById('mode-override-btn');
   var autoBtn = document.getElementById('mode-auto-btn');
@@ -798,8 +807,6 @@ function updateCapacityAnalysisUI(analysis, messageBytes) {
                                 capacityBytes.toLocaleString() + ' bytes (' + analysis.mode + '-LSB)';
     capacityBadge.className = 'badge ' + badgeColor;
     capacityBadge.setAttribute('role', 'button');
-    capacityBadge.setAttribute('data-bs-toggle', 'modal');
-    capacityBadge.setAttribute('data-bs-target', '#lsbModal');
     capacityBadge.setAttribute('title', 'Click to learn how this works');
   }
 }
@@ -863,8 +870,6 @@ function updateManualModeAnalysis(messageBytes, imageWidth, imageHeight, manualM
                                 capacityBytes.toLocaleString() + ' bytes (' + manualMode + '-LSB)';
     capacityBadge.className = 'badge ' + badgeColor;
     capacityBadge.setAttribute('role', 'button');
-    capacityBadge.setAttribute('data-bs-toggle', 'modal');
-    capacityBadge.setAttribute('data-bs-target', '#lsbModal');
     capacityBadge.setAttribute('title', 'Click to learn how this works');
   }
 }
@@ -991,7 +996,7 @@ function previewEncodeImage(file) {
           capacityBadge.style.display = 'inline-block';
           capacityBadge.textContent = '💾 0 / ' + capacity.toLocaleString() + ' bytes (' + lsbBits + '-LSB)';
         }
-        updateModalWithImageData(domCanvas.width, domCanvas.height, capacity, lsbBits);
+        updateLsbInfoWithImageData(domCanvas.width, domCanvas.height, capacity, lsbBits);
         var messageText = DOM_CACHE.get('messageTextarea')?.value || '';
         if (messageText) updateMessageAnalysis(messageText);
       } catch (error) {
@@ -1002,7 +1007,7 @@ function previewEncodeImage(file) {
   });
 }
 
-function updateModalWithImageData(width, height, capacity, lsbBitsPerChannel) {
+function updateLsbInfoWithImageData(width, height, capacity, lsbBitsPerChannel) {
   lsbBitsPerChannel = lsbBitsPerChannel || 1;  // Default to 1-LSB if not provided
   
   var totalPixels = width * height;
@@ -1011,8 +1016,8 @@ function updateModalWithImageData(width, height, capacity, lsbBitsPerChannel) {
   var lsbBitsAvailable = availablePixels * 3 * lsbBitsPerChannel;  // Use selected LSB mode
   
   // Update image info using safe DOM creation
-  var modalImageInfo = document.getElementById('modalImageInfo');
-  modalImageInfo.textContent = ''; // Clear existing content
+  var lsbImageInfo = document.getElementById('lsbImageInfo');
+  lsbImageInfo.textContent = ''; // Clear existing content
   
   var createLine = function(text) {
     var line = document.createElement('div');
@@ -1034,40 +1039,40 @@ function updateModalWithImageData(width, height, capacity, lsbBitsPerChannel) {
   
   var strong = document.createElement('strong');
   strong.textContent = 'Your Image:';
-  modalImageInfo.appendChild(strong);
-  modalImageInfo.appendChild(document.createElement('br'));
-  modalImageInfo.appendChild(createCodeLine('Size: ', width + ' × ' + height, 'pixels'));
-  modalImageInfo.appendChild(createCodeLine('Total pixels: ', totalPixels.toLocaleString(), ''));
-  modalImageInfo.appendChild(createCodeLine('Sentinel overhead: ', '19 pixels (7 bytes)', ''));
-  modalImageInfo.appendChild(createCodeLine('Available pixels: ', availablePixels.toLocaleString(), ''));
-  modalImageInfo.appendChild(createCodeLine('Current mode: ', lsbBitsPerChannel + '-LSB', ''));
-  modalImageInfo.appendChild(createCodeLine('Capacity: ', capacity.toLocaleString(), 'bytes'));
+  lsbImageInfo.appendChild(strong);
+  lsbImageInfo.appendChild(document.createElement('br'));
+  lsbImageInfo.appendChild(createCodeLine('Size: ', width + ' × ' + height, 'pixels'));
+  lsbImageInfo.appendChild(createCodeLine('Total pixels: ', totalPixels.toLocaleString(), ''));
+  lsbImageInfo.appendChild(createCodeLine('Sentinel overhead: ', '19 pixels (7 bytes)', ''));
+  lsbImageInfo.appendChild(createCodeLine('Available pixels: ', availablePixels.toLocaleString(), ''));
+  lsbImageInfo.appendChild(createCodeLine('Current mode: ', lsbBitsPerChannel + '-LSB', ''));
+  lsbImageInfo.appendChild(createCodeLine('Capacity: ', capacity.toLocaleString(), 'bytes'));
   
   // Add per-mode capacity comparison
-  modalImageInfo.appendChild(document.createElement('br'));
+  lsbImageInfo.appendChild(document.createElement('br'));
   var strongModes = document.createElement('strong');
   strongModes.textContent = 'Capacity by LSB Mode:';
-  modalImageInfo.appendChild(strongModes);
-  modalImageInfo.appendChild(document.createElement('br'));
+  lsbImageInfo.appendChild(strongModes);
+  lsbImageInfo.appendChild(document.createElement('br'));
   
   for (var mode = 1; mode <= MAX_LSB_BITS; mode++) {
     var modeCapacity = Math.floor((availablePixels * 3 * mode) / 8);
     var indicator = mode === lsbBitsPerChannel ? ' ← Current' : '';
-    modalImageInfo.appendChild(createCodeLine(mode + '-LSB: ', modeCapacity.toLocaleString(), 'bytes' + indicator));
+    lsbImageInfo.appendChild(createCodeLine(mode + '-LSB: ', modeCapacity.toLocaleString(), 'bytes' + indicator));
   }
   
   // Update calculation steps using safe DOM creation
-  var modalCalcSteps = document.getElementById('modalCalcSteps');
-  modalCalcSteps.textContent = ''; // Clear existing content
+  var lsbCalcSteps = document.getElementById('lsbCalcSteps');
+  lsbCalcSteps.textContent = ''; // Clear existing content
   
   var strongCalc = document.createElement('strong');
   strongCalc.textContent = 'Step-by-step (v3 format):';
-  modalCalcSteps.appendChild(strongCalc);
-  modalCalcSteps.appendChild(document.createElement('br'));
-  modalCalcSteps.appendChild(createCodeLine('1. ', width.toLocaleString() + ' × ' + height.toLocaleString() + ' = ' + totalPixels.toLocaleString(), 'total pixels'));
-  modalCalcSteps.appendChild(createCodeLine('2. ', totalPixels.toLocaleString() + ' - 19 = ' + availablePixels.toLocaleString(), 'pixels (minus sentinel)'));
-  modalCalcSteps.appendChild(createCodeLine('3. ', availablePixels.toLocaleString() + ' × 3 × ' + lsbBitsPerChannel + ' = ' + lsbBitsAvailable.toLocaleString(), 'LSB bits'));
-  modalCalcSteps.appendChild(createCodeLine('4. ', lsbBitsAvailable.toLocaleString() + ' ÷ 8 = ' + capacity.toLocaleString(), 'bytes capacity'));
+  lsbCalcSteps.appendChild(strongCalc);
+  lsbCalcSteps.appendChild(document.createElement('br'));
+  lsbCalcSteps.appendChild(createCodeLine('1. ', width.toLocaleString() + ' × ' + height.toLocaleString() + ' = ' + totalPixels.toLocaleString(), 'total pixels'));
+  lsbCalcSteps.appendChild(createCodeLine('2. ', totalPixels.toLocaleString() + ' - 19 = ' + availablePixels.toLocaleString(), 'pixels (minus sentinel)'));
+  lsbCalcSteps.appendChild(createCodeLine('3. ', availablePixels.toLocaleString() + ' × 3 × ' + lsbBitsPerChannel + ' = ' + lsbBitsAvailable.toLocaleString(), 'LSB bits'));
+  lsbCalcSteps.appendChild(createCodeLine('4. ', lsbBitsAvailable.toLocaleString() + ' ÷ 8 = ' + capacity.toLocaleString(), 'bytes capacity'));
 }
 
 function previewImage(file, canvasSelector, callback, errorContext) {

@@ -96,7 +96,7 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 - **Direct download buttons**: No more right-click instructions
 - **Drag-and-drop file upload support**: Integrated into preview areas
 - Responsive mobile-optimized design
-- Educational modal explaining LSB steganography (v3 two-layer architecture)
+- In-page educational cards explaining steganography and LSB encoding (v3 two-layer architecture)
 
 **Performance:**
 - TextEncoder/TextDecoder for proper Unicode handling
@@ -110,7 +110,6 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 **Accessibility:**
 - Keyboard navigation support
 - ARIA labels for screen readers
-- Focus management in modals
 - High contrast mode compatible
 
 ### Tech Stack
