@@ -547,6 +547,17 @@ HEADER_VERSION (v2)
 - **Benefit:** Bypasses Chrome/Edge's download manager, so there is no `.crdownload` round-trip and no download-shelf scanning delay after clicking Save
 - **Compatibility:** Falls back to the previous anchor-click download in Firefox, Safari, and any browser without the File System Access API; cancelling the save dialog (`AbortError`) is silently ignored
 
+**AES-256-GCM Confidentiality Mode**
+- **Change:** New optional "Encrypt with password" switch on the Encode tab, plus matching password field on the Decode tab that appears automatically when an encrypted image is detected
+- **Algorithm:** AES-256-GCM with 128-bit authentication tag, key derived via PBKDF2-SHA256 (600,000 iterations); both from the browser's built-in Web Crypto API (no new dependency)
+- **Format:** 45-byte overhead per message: `version (1) | salt (16) | iv (12) | ciphertext + tag (n + 16)`. Payload length is stored in the existing 32-bit sentinel length field; a reserved bit (`flags = 1000`) marks the image as encrypted
+- **Authenticated metadata:** GCM additional data is `[version, ...canonical 7-byte sentinel]`, so flipping the LSB mode, flag bits, or payload length in the image makes decryption fail
+- **Validation first:** the decode worker rejects unknown flag combinations, payload versions, and sub-minimum payload lengths before any PBKDF2 run, so bad input never spends ~600 ms of key derivation
+- **Stale-result guards:** monotonic `encodeGeneration` / `decodeGeneration` counters invalidate in-flight work after image upload, tab switch, or message/password edits; every continuation after an await discards its result if the generation has moved on. In-flight counters (`encodeInFlight` / `decodeInFlight`) make every exit path idempotent so a non-click bump (e.g. the user typing another character while PBKDF2 is still running) never leaves the Encode/Decode button stuck on "Encrypting..." / disabled; back-to-back clicks also settle cleanly, with the newer operation owning the UI
+- **Password handling:** UTF-8 encoded exactly as typed (no trim/normalization), fed to a non-extractable `CryptoKey`; wrong-password and tag-mismatch failures surface as one generic "Wrong password or corrupted image" error
+- **Legacy compatibility:** older builds that ignore the flag now hit the decode worker's strict UTF-8 decode (`{ fatal: true }`) and fail cleanly instead of displaying garbage
+- **New file:** `crypto.js` (DOM-free so `tests.html` can exercise it directly); `parseSentinelFromPixels`, `sanitizeDecodedMessage`, and the new `buildSentinelBytes` moved into `constants.js` to share one implementation across workers and the main thread
+
 ---
 
 **Document Version:** 2.0  

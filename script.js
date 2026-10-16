@@ -210,6 +210,76 @@ function setDownloadCache(type, blob, width, height) {
   updateDownloadAvailability();
 }
 
+// Monotonic generation counters guard against stale results after an await.
+// Anything that invalidates a pending encode/decode (image upload, tab
+// switch, message/password edit, operation start) must bump the counter.
+// Every continuation re-checks before touching the UI or cache.
+var encodeGeneration = 0;
+var decodeGeneration = 0;
+
+// In-flight counters: incremented when encodeMessage/decodeMessage starts,
+// decremented on every exit path. The silent-return (gen-mismatch) paths use
+// the counter to decide whether to restore the button, so a non-click bump
+// (text input, toggle, password edit) doesn't leave the button stuck on
+// "Encrypting..." / disabled, while rapid double-clicks still let the newer
+// in-flight operation own the UI.
+var encodeInFlight = 0;
+var decodeInFlight = 0;
+
+function bumpEncodeGeneration() { encodeGeneration++; }
+function bumpDecodeGeneration() { decodeGeneration++; }
+
+function clearDecodedDisplay() {
+  var text = document.getElementById('decoded-message-text');
+  if (text) text.textContent = '';
+  var binary = document.querySelector('.binary-decode');
+  if (binary) binary.style.display = 'none';
+  var cap = document.querySelector('.decode-capacity-bar');
+  if (cap) cap.style.display = 'none';
+}
+
+function clearPasswords() {
+  var p1 = document.getElementById('encrypt-password');
+  var p2 = document.getElementById('encrypt-password-confirm');
+  var p3 = document.getElementById('decrypt-password');
+  if (p1) p1.value = '';
+  if (p2) p2.value = '';
+  if (p3) p3.value = '';
+  var fb = document.getElementById('encrypt-password-feedback');
+  if (fb) { fb.textContent = ''; fb.className = 'text-muted d-block'; }
+}
+
+function isEncryptionEnabled() {
+  var toggle = document.getElementById('encrypt-toggle');
+  return !!(toggle && toggle.checked && !toggle.disabled);
+}
+
+function cryptoAvailable() {
+  return typeof StegCrypto !== 'undefined' && StegCrypto.isCryptoAvailable();
+}
+
+// Returns true if passwords match and are non-empty. Updates inline
+// feedback. Preserves whitespace - "pw" and "pw " are different.
+function validateEncryptPasswords(reportError) {
+  var p1El = document.getElementById('encrypt-password');
+  var p2El = document.getElementById('encrypt-password-confirm');
+  var fb = document.getElementById('encrypt-password-feedback');
+  var p1 = p1El ? p1El.value : '';
+  var p2 = p2El ? p2El.value : '';
+  if (p1.length === 0) {
+    if (fb) { fb.textContent = 'Enter a password.'; fb.className = 'text-danger d-block'; }
+    if (reportError) showError('Please enter an encryption password.');
+    return false;
+  }
+  if (p1 !== p2) {
+    if (fb) { fb.textContent = 'Passwords do not match.'; fb.className = 'text-danger d-block'; }
+    if (reportError) showError('Passwords do not match.');
+    return false;
+  }
+  if (fb) { fb.textContent = 'Passwords match.'; fb.className = 'text-success d-block'; }
+  return true;
+}
+
 // Single-flight worker registry: starting a new worker in a given slot
 // terminates any in-flight predecessor. Prevents stale results from rapid
 // re-clicks (encode/upload churn).
@@ -397,10 +467,8 @@ function validateMessageLength(length) {
   return true;
 }
 
-function sanitizeDecodedMessage(str) {
-  if (typeof str !== 'string') return '';
-  return str.replace(/[\u202A-\u202E\u2066-\u2069]/g, '');
-}
+// sanitizeDecodedMessage and parseSentinelFromPixels live in constants.js so
+// workers and the main thread share identical implementations.
 
 function validateCapacity(capacity) {
   if (!Number.isSafeInteger(capacity)) {
@@ -515,22 +583,76 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
-  // Clear download cache when switching away from Encode tab (frees blob memory)
+  // Tab-switch housekeeping. Switching tabs invalidates any pending async
+  // work on the other tab and wipes typed passwords.
   document.querySelectorAll('a[data-bs-toggle="tab"]').forEach(function(tab) {
     tab.addEventListener('shown.bs.tab', function(e) {
-      if (e.target.getAttribute('href') === '#decode') {
+      var target = e.target.getAttribute('href');
+      if (target === '#decode') {
         clearEncodedCaches();
+        bumpEncodeGeneration();
+      } else if (target === '#encode') {
+        bumpDecodeGeneration();
+        clearDecodedDisplay();
       }
+      clearPasswords();
     });
   });
 
-  // Message textarea - real-time character counter and auto LSB selection
+  // Message textarea - real-time character counter and auto LSB selection.
+  // Also bumps encodeGeneration so a mid-flight encode discards its result.
   var messageTextarea = DOM_CACHE.get('messageTextarea');
   if (messageTextarea) {
     messageTextarea.addEventListener('input', function() {
       clearEncodedCaches();
+      bumpEncodeGeneration();
       updateMessageAnalysis(this.value);
     });
+  }
+
+  // Encrypt toggle + password handlers.
+  var encryptToggle = document.getElementById('encrypt-toggle');
+  var encryptPwGroup = document.getElementById('encrypt-password-group');
+  var encryptUnavailable = document.getElementById('encrypt-unavailable');
+  var encryptPw = document.getElementById('encrypt-password');
+  var encryptPwConfirm = document.getElementById('encrypt-password-confirm');
+
+  if (encryptToggle) {
+    if (!cryptoAvailable()) {
+      encryptToggle.disabled = true;
+      encryptToggle.checked = false;
+      if (encryptUnavailable) encryptUnavailable.style.display = 'block';
+    }
+    encryptToggle.addEventListener('change', function() {
+      clearEncodedCaches();
+      bumpEncodeGeneration();
+      if (encryptPwGroup) {
+        encryptPwGroup.style.display = this.checked ? 'block' : 'none';
+      }
+      if (!this.checked) {
+        // Hide feedback and clear passwords when turning off.
+        if (encryptPw) encryptPw.value = '';
+        if (encryptPwConfirm) encryptPwConfirm.value = '';
+        var fb = document.getElementById('encrypt-password-feedback');
+        if (fb) { fb.textContent = ''; fb.className = 'text-muted d-block'; }
+      }
+      var text = DOM_CACHE.get('messageTextarea')?.value || '';
+      updateMessageAnalysis(text);
+    });
+  }
+
+  function onEncryptPwInput() {
+    clearEncodedCaches();
+    bumpEncodeGeneration();
+    // Non-blocking feedback (no error popup).
+    validateEncryptPasswords(false);
+  }
+  if (encryptPw) encryptPw.addEventListener('input', onEncryptPwInput);
+  if (encryptPwConfirm) encryptPwConfirm.addEventListener('input', onEncryptPwInput);
+
+  var decryptPw = document.getElementById('decrypt-password');
+  if (decryptPw) {
+    decryptPw.addEventListener('input', function() { bumpDecodeGeneration(); });
   }
   
   var capacityBadge = document.getElementById('capacity-badge');
@@ -552,35 +674,29 @@ document.addEventListener('DOMContentLoaded', function() {
       document.getElementById('capacity-analysis').style.display = 'none';
       document.getElementById('manual-mode-override').style.display = 'block';
       clearEncodedCaches();
-      // Trigger recalculation with manual mode
+      bumpEncodeGeneration();
       var text = DOM_CACHE.get('messageTextarea')?.value || '';
-      if (text) {
-        updateMessageAnalysis(text);
-      }
+      if (text) updateMessageAnalysis(text);
     });
   }
-  
+
   if (autoBtn) {
     autoBtn.addEventListener('click', function() {
       document.getElementById('manual-mode-override').style.display = 'none';
       document.getElementById('capacity-analysis').style.display = 'block';
       clearEncodedCaches();
-      // Trigger recalculation with auto mode
+      bumpEncodeGeneration();
       var text = DOM_CACHE.get('messageTextarea')?.value || '';
-      if (text) {
-        updateMessageAnalysis(text);
-      }
+      if (text) updateMessageAnalysis(text);
     });
   }
-  
+
   if (manualSelect) {
     manualSelect.addEventListener('change', function() {
       clearEncodedCaches();
-      // Recalculate with manual mode
+      bumpEncodeGeneration();
       var text = DOM_CACHE.get('messageTextarea')?.value || '';
-      if (text) {
-        updateMessageAnalysis(text);
-      }
+      if (text) updateMessageAnalysis(text);
     });
   }
   
@@ -687,6 +803,16 @@ function previewDecodeImage(file) {
     file = document.querySelector('input[name=decodeFile]').files[0];
   }
 
+  // New image invalidates any in-flight decode and wipes previous output.
+  bumpDecodeGeneration();
+  clearDecodedDisplay();
+  var decryptPw = document.getElementById('decrypt-password');
+  if (decryptPw) decryptPw.value = '';
+  var pwGroup = document.getElementById('decrypt-password-group');
+  if (pwGroup) pwGroup.style.display = 'none';
+  var encBadge = document.getElementById('detected-encrypted-badge');
+  if (encBadge) encBadge.style.display = 'none';
+
   toggleDecodeDropZonePreview(false);
 
   if (!validateFileBasics(file, 'decode')) return;
@@ -704,11 +830,12 @@ function previewDecodeImage(file) {
   });
 }
 
-// Auto LSB Mode Selection Functions
-function calculateOptimalLSBMode(messageBytes, imageWidth, imageHeight) {
-  var requiredBits = SENTINEL_BITS + (messageBytes * 8);
+// Auto LSB Mode Selection Functions. payloadBytes is the on-disk size
+// (plaintext length, or plaintext + 45 when encrypting).
+function calculateOptimalLSBMode(payloadBytes, imageWidth, imageHeight) {
+  var requiredBits = SENTINEL_BITS + (payloadBytes * 8);
   var availablePixels = (imageWidth * imageHeight) - SENTINEL_PIXELS;
-  
+
   // Try each mode from 1→4 (prefer lowest for minimal footprint)
   for (var lsbMode = 1; lsbMode <= MAX_LSB_BITS; lsbMode++) {
     var capacity = availablePixels * 3 * lsbMode;
@@ -723,7 +850,7 @@ function calculateOptimalLSBMode(messageBytes, imageWidth, imageHeight) {
       };
     }
   }
-  
+
   return null; // Message too large
 }
 
@@ -738,13 +865,19 @@ function updateMessageAnalysis(text) {
   var charCount = text.length;
   const encoder = TEXT_ENCODER;
   var byteCount = encoder.encode(text).length;
-  
+  var encrypted = isEncryptionEnabled();
+  var payloadBytes = encrypted ? byteCount + ENCRYPTION_OVERHEAD_BYTES : byteCount;
+
   // Update counter badge
   var counterBadge = document.getElementById('message-counter-badge');
   if (counterBadge) {
-    counterBadge.textContent = '📝 ' + charCount.toLocaleString() + ' characters (' + byteCount.toLocaleString() + ' bytes)';
+    var suffix = encrypted
+      ? ' + ' + ENCRYPTION_OVERHEAD_BYTES + ' bytes encryption overhead'
+      : '';
+    counterBadge.textContent = '📝 ' + charCount.toLocaleString() + ' characters (' +
+                               byteCount.toLocaleString() + ' bytes' + suffix + ')';
   }
-  
+
   // Get image dimensions
   var canvas = DOM_CACHE.get('originalCanvas');
   if (!canvas || canvas.width === 0) {
@@ -756,31 +889,29 @@ function updateMessageAnalysis(text) {
     }
     return;
   }
-  
+
   // Check if manual override is active
   var manualOverride = document.getElementById('manual-mode-override');
   var isManual = manualOverride && manualOverride.style.display !== 'none';
-  
+
   if (isManual) {
     // Use manual mode
     var manualMode = parseInt(document.getElementById('manual-lsb-mode').value, 10);
-    updateManualModeAnalysis(byteCount, canvas.width, canvas.height, manualMode);
+    updateManualModeAnalysis(payloadBytes, canvas.width, canvas.height, manualMode, encrypted);
   } else {
     // Calculate optimal mode
-    var analysis = calculateOptimalLSBMode(byteCount, canvas.width, canvas.height);
-    
+    var analysis = calculateOptimalLSBMode(payloadBytes, canvas.width, canvas.height);
+
     if (!analysis) {
-      // Message too large
-      showCapacityError(byteCount, canvas.width, canvas.height);
+      showCapacityError(payloadBytes, canvas.width, canvas.height, encrypted);
       return;
     }
-    
-    // Update UI with analysis
-    updateCapacityAnalysisUI(analysis, byteCount);
+
+    updateCapacityAnalysisUI(analysis, payloadBytes, encrypted);
   }
 }
 
-function updateCapacityAnalysisUI(analysis, messageBytes) {
+function updateCapacityAnalysisUI(analysis, payloadBytes, encrypted) {
   var capacityAnalysis = document.getElementById('capacity-analysis');
   var usageBar = document.getElementById('usage-bar');
   var capacityStats = document.getElementById('capacity-stats');
@@ -815,10 +946,11 @@ function updateCapacityAnalysisUI(analysis, messageBytes) {
   
   // Update stats text
   var capacityBytes = Math.floor(analysis.available / 8);
-  capacityStats.textContent = messageBytes.toLocaleString() + ' / ' + 
-                              capacityBytes.toLocaleString() + ' bytes (' + 
-                              analysis.utilization + '% - ' + analysis.recommendation + ')';
-  
+  var encSuffix = encrypted ? ', encrypted' : '';
+  capacityStats.textContent = payloadBytes.toLocaleString() + ' / ' +
+                              capacityBytes.toLocaleString() + ' bytes (' +
+                              analysis.utilization + '% - ' + analysis.recommendation + encSuffix + ')';
+
   // Update auto mode badge
   autoModeBadge.textContent = 'Auto: ' + analysis.mode + '-LSB';
   autoModeBadge.className = 'badge';
@@ -838,7 +970,8 @@ function updateCapacityAnalysisUI(analysis, messageBytes) {
   // Update capacity badge
   if (capacityBadge) {
     capacityBadge.style.display = 'inline-block';
-    capacityBadge.textContent = '💾 ' + messageBytes.toLocaleString() + ' / ' + 
+    var lockPrefix = encrypted ? '🔒 ' : '💾 ';
+    capacityBadge.textContent = lockPrefix + payloadBytes.toLocaleString() + ' / ' +
                                 capacityBytes.toLocaleString() + ' bytes (' + analysis.mode + '-LSB)';
     capacityBadge.className = 'badge ' + badgeColor;
     capacityBadge.setAttribute('role', 'button');
@@ -846,8 +979,8 @@ function updateCapacityAnalysisUI(analysis, messageBytes) {
   }
 }
 
-function updateManualModeAnalysis(messageBytes, imageWidth, imageHeight, manualMode) {
-  var requiredBits = SENTINEL_BITS + (messageBytes * 8);
+function updateManualModeAnalysis(payloadBytes, imageWidth, imageHeight, manualMode, encrypted) {
+  var requiredBits = SENTINEL_BITS + (payloadBytes * 8);
   var availablePixels = (imageWidth * imageHeight) - SENTINEL_PIXELS;
   var capacity = availablePixels * 3 * manualMode;
   
@@ -861,7 +994,7 @@ function updateManualModeAnalysis(messageBytes, imageWidth, imageHeight, manualM
   
   if (requiredBits > capacity) {
     // Message too large for manual mode
-    showCapacityError(messageBytes, imageWidth, imageHeight);
+    showCapacityError(payloadBytes, imageWidth, imageHeight, encrypted);
     return;
   }
   
@@ -890,18 +1023,20 @@ function updateManualModeAnalysis(messageBytes, imageWidth, imageHeight, manualM
   
   var capacityBytes = Math.floor(capacity / 8);
   var recommendation = getRecommendation(manualMode, utilization);
-  capacityStats.textContent = messageBytes.toLocaleString() + ' / ' + 
-                              capacityBytes.toLocaleString() + ' bytes (' + 
-                              utilization.toFixed(1) + '% - ' + recommendation + ')';
-  
+  var encSuffix = encrypted ? ', encrypted' : '';
+  capacityStats.textContent = payloadBytes.toLocaleString() + ' / ' +
+                              capacityBytes.toLocaleString() + ' bytes (' +
+                              utilization.toFixed(1) + '% - ' + recommendation + encSuffix + ')';
+
   autoModeBadge.textContent = 'Manual: ' + manualMode + '-LSB';
   autoModeBadge.className = 'badge bg-secondary';
   autoModeBadge.setAttribute('data-auto-mode', manualMode);
-  
+
   // Update capacity badge
   if (capacityBadge) {
     capacityBadge.style.display = 'inline-block';
-    capacityBadge.textContent = '💾 ' + messageBytes.toLocaleString() + ' / ' + 
+    var lockPrefix = encrypted ? '🔒 ' : '💾 ';
+    capacityBadge.textContent = lockPrefix + payloadBytes.toLocaleString() + ' / ' +
                                 capacityBytes.toLocaleString() + ' bytes (' + manualMode + '-LSB)';
     capacityBadge.className = 'badge ' + badgeColor;
     capacityBadge.setAttribute('role', 'button');
@@ -909,7 +1044,7 @@ function updateManualModeAnalysis(messageBytes, imageWidth, imageHeight, manualM
   }
 }
 
-function showCapacityError(messageBytes, imageWidth, imageHeight) {
+function showCapacityError(payloadBytes, imageWidth, imageHeight, encrypted) {
   var capacityAnalysis = document.getElementById('capacity-analysis');
   var usageBar = document.getElementById('usage-bar');
   var capacityStats = document.getElementById('capacity-stats');
@@ -925,39 +1060,21 @@ function showCapacityError(messageBytes, imageWidth, imageHeight) {
   // Calculate max capacity with 4-LSB
   var availablePixels = (imageWidth * imageHeight) - SENTINEL_PIXELS;
   var maxCapacity = Math.floor((availablePixels * 3 * MAX_LSB_BITS) / 8);
-  
-  capacityStats.textContent = 'Message too large! ' + messageBytes.toLocaleString() + 
-                              ' bytes exceeds maximum capacity of ' + maxCapacity.toLocaleString() + ' bytes';
+
+  var kind = encrypted ? 'encrypted payload' : 'message';
+  capacityStats.textContent = (encrypted ? 'Encrypted ' : '') + 'Message too large! ' +
+                              payloadBytes.toLocaleString() + ' ' + kind + ' bytes exceed maximum capacity of ' +
+                              maxCapacity.toLocaleString() + ' bytes';
   capacityStats.classList.add('text-danger');
-  
+
   // Update capacity badge to show error
   if (capacityBadge) {
     capacityBadge.style.display = 'inline-block';
-    capacityBadge.textContent = '💾 ' + messageBytes.toLocaleString() + ' / ' + 
+    var lockPrefix = encrypted ? '🔒 ' : '💾 ';
+    capacityBadge.textContent = lockPrefix + payloadBytes.toLocaleString() + ' / ' +
                                 maxCapacity.toLocaleString() + ' bytes (Too Large!)';
     capacityBadge.className = 'badge bg-danger';
   }
-}
-
-function parseSentinelFromPixels(pixel) {
-  var sentinelBitsArray = [];
-  for (var i = 0; i < SENTINEL_PIXELS * 4 && sentinelBitsArray.length < SENTINEL_BITS; i += 4) {
-    for (var offset = 0; offset < 3; offset++) {
-      sentinelBitsArray.push((pixel[i + offset] & 1).toString());
-      if (sentinelBitsArray.length >= SENTINEL_BITS) break;
-    }
-  }
-  var sentinelBits = sentinelBitsArray.join('');
-  var magic = sentinelBits.substring(0, 16);
-  var lsbBits = 1;
-  var messageLength = 0;
-  var isV3 = false;
-  if (magic === MAGIC_V3) {
-    lsbBits = parseInt(sentinelBits.substring(16, 20), 2);
-    messageLength = parseInt(sentinelBits.substring(24, 56), 2);
-    isV3 = true;
-  }
-  return { lsbBits: lsbBits, messageLength: messageLength, isV3: isV3 };
 }
 
 function detectLsbMode() {
@@ -971,28 +1088,34 @@ function detectLsbMode() {
     var detectedMode = parsed.lsbBits;
     var messageLength = parsed.messageLength;
     var isV3 = parsed.isV3;
+    var isEncrypted = parsed.isEncrypted;
 
     // Update UI (display only - decode does not trust DOM)
     var detector = document.getElementById('decode-mode-detector');
     var modeText = document.getElementById('detected-mode-text');
     var modeIcon = document.getElementById('detected-mode-icon');
-    
+    var encBadge = document.getElementById('detected-encrypted-badge');
+    var pwGroup = document.getElementById('decrypt-password-group');
+
     if (detector && modeText && modeIcon) {
       modeText.textContent = detectedMode + '-LSB';
-      modeIcon.textContent = isV3 ? '✓' : '⚠️';
+      modeIcon.textContent = isV3 ? (isEncrypted ? '🔒' : '✓') : '⚠️';
       detector.style.display = 'block';
-      
+
       // Store detected mode and message length for decode
       detector.setAttribute('data-detected-mode', detectedMode);
       detector.setAttribute('data-is-v3', isV3);
+      detector.setAttribute('data-is-encrypted', isEncrypted);
       detector.setAttribute('data-message-length', messageLength);
-      
+
       // Reset manual override to hidden
       var autoDetected = document.getElementById('auto-detected');
       var manualSelect = document.getElementById('manual-mode-select');
       if (autoDetected) autoDetected.style.display = 'block';
       if (manualSelect) manualSelect.style.display = 'none';
     }
+    if (encBadge) encBadge.style.display = isV3 && isEncrypted ? 'inline-block' : 'none';
+    if (pwGroup) pwGroup.style.display = isV3 && isEncrypted ? 'block' : 'none';
   } catch (error) {
     console.error('Mode detection failed:', error);
   }
@@ -1004,6 +1127,7 @@ function previewEncodeImage(file) {
   }
 
   clearEncodedCaches();
+  bumpEncodeGeneration();     // New image invalidates any in-flight encode.
   toggleEncodeDropZonePreview(false);
   var toggleEncoded = document.getElementById('previewToggleEncoded');
   if (toggleEncoded) {
@@ -1133,63 +1257,114 @@ function previewImage(file, canvasSelector, callback, errorContext) {
   image.src = URL.createObjectURL(file);
 }
 
-function encodeMessage() {
+async function encodeMessage() {
   var encodeButton = document.querySelector('button.encode-btn');
-  
-  // Rate limiting - disable button during processing
+  // Hard-coded original label: capturing textContent at entry would record a
+  // stale "Encrypting..." if the user clicks twice in quick succession.
+  var ORIGINAL_LABEL = 'Encode';
+
+  var setBusy = function(txt) {
+    if (encodeButton) encodeButton.textContent = txt;
+  };
+  // Guards double-exit: every exit path (success, error, silent-return,
+  // top-level catch) is idempotent, so decrementing encodeInFlight twice
+  // is impossible.
+  var exitHandled = false;
+  var _restoreButtonRaw = function() {
+    if (encodeButton) {
+      encodeButton.disabled = false;
+      encodeButton.textContent = ORIGINAL_LABEL;
+    }
+  };
+  // Normal exit: decrement in-flight and always restore the button.
+  var restoreButton = function() {
+    if (exitHandled) return;
+    exitHandled = true;
+    encodeInFlight--;
+    _restoreButtonRaw();
+  };
+  // Silent-return (gen-mismatch) exit: decrement in-flight and only restore
+  // the button if we were the last operation holding it busy. A newer
+  // encodeMessage in flight owns the UI and will restore it later.
+  var exitStale = function() {
+    if (exitHandled) return;
+    exitHandled = true;
+    encodeInFlight--;
+    if (encodeInFlight === 0) _restoreButtonRaw();
+  };
+
   if (encodeButton) {
     encodeButton.disabled = true;
   }
-  
+  encodeInFlight++;
+
+  // Start a new generation. Anything we await below must verify this is
+  // still the current operation before touching the UI or cache.
+  var myGen = ++encodeGeneration;
+
   clearEncodedCaches();
-  
+
   var errorElement = DOM_CACHE.get('errorElement');
   if (errorElement) errorElement.style.display = 'none';
-  document.querySelector(".binary").style.display = 'none';
+  document.querySelector('.binary').style.display = 'none';
 
   var workerPending = false;
   try {
     var text = DOM_CACHE.get('messageTextarea')?.value || '';
-    
-    // Validate message is not empty
     if (!text || text.length === 0) {
       showError('Please enter a message to encode.');
+      restoreButton();
       return;
     }
-    
-    // Encode to UTF-8 and validate byte length
-    const encoder = TEXT_ENCODER;
-    var messageBytes = encoder.encode(text);
+
+    var messageBytes = TEXT_ENCODER.encode(text);
     if (!validateMessageLength(messageBytes.length)) {
+      restoreButton();
       return;
+    }
+
+    var encrypted = isEncryptionEnabled();
+    if (encrypted) {
+      if (!cryptoAvailable()) {
+        showError('Encryption requires a secure context (HTTPS or localhost).');
+        restoreButton();
+        return;
+      }
+      // Encrypted payload also must fit within MAX_MESSAGE_LENGTH, so the
+      // decoder's own limit never rejects it. Overhead is 45 bytes.
+      if (messageBytes.length > MAX_MESSAGE_LENGTH - ENCRYPTION_OVERHEAD_BYTES) {
+        showError('Message too long for encryption. Maximum plaintext size: ' +
+                  (MAX_MESSAGE_LENGTH - ENCRYPTION_OVERHEAD_BYTES).toLocaleString() + ' bytes.');
+        restoreButton();
+        return;
+      }
+      if (!validateEncryptPasswords(true)) {
+        restoreButton();
+        return;
+      }
     }
 
     var originalCanvas = DOM_CACHE.get('originalCanvas');
     var nulledCanvas = DOM_CACHE.get('nulledCanvas');
     var messageCanvas = DOM_CACHE.get('messageCanvas');
 
-    if (!originalCanvas || !nulledCanvas || !messageCanvas) {
+    if (!originalCanvas || !nulledCanvas || !messageCanvas || originalCanvas.width === 0) {
       showError('Please upload an image first.');
+      restoreButton();
       return;
     }
-
-    var originalContext = originalCanvas.getContext("2d", { willReadFrequently: true });
-    var nulledContext = nulledCanvas.getContext("2d", { willReadFrequently: true });
-    var messageContext = messageCanvas.getContext("2d", { willReadFrequently: true });
 
     var width = originalCanvas.width;
     var height = originalCanvas.height;
-    
-    // Validate dimensions
     if (!validateImageDimensions(width, height)) {
+      restoreButton();
       return;
     }
-    
-    // Get LSB mode from auto-selection or manual override
+
+    // Resolve LSB mode from auto-selection or manual override.
     var lsbBits = 1;
     var manualOverride = document.getElementById('manual-mode-override');
     var isManual = manualOverride && manualOverride.style.display !== 'none';
-    
     if (isManual) {
       lsbBits = parseInt(document.getElementById('manual-lsb-mode').value, 10);
     } else {
@@ -1198,61 +1373,95 @@ function encodeMessage() {
         lsbBits = parseInt(autoModeBadge.getAttribute('data-auto-mode') || 1, 10);
       }
     }
-    
-    // Calculate capacity (accounting for v3 sentinel)
+
+    // On-disk payload length (what gets hidden). Encrypted payload is
+    // plaintext + 45; the sentinel's length field holds this value.
+    var payloadLength = encrypted
+      ? messageBytes.length + ENCRYPTION_OVERHEAD_BYTES
+      : messageBytes.length;
     var availablePixels = (width * height) - SENTINEL_PIXELS;
-    var totalBits = availablePixels * lsbBits * 3;
-    var maxCapacity = Math.floor(totalBits / 8);
-    
+    var maxCapacity = Math.floor((availablePixels * lsbBits * 3) / 8);
+
     if (!validateCapacity(maxCapacity)) {
+      restoreButton();
       return;
     }
-
-    // Message and sentinel are stored in disjoint pixel ranges, so the
-    // capacity check just compares message bits to the message-pixel slot.
-    var totalMessageBits = messageBytes.length * 8;
-    var messageCapacityBits = availablePixels * lsbBits * 3;
-    if (totalMessageBits > messageCapacityBits) {
-      showError('Message too long! Your message is ' + messageBytes.length.toLocaleString() +
+    if (payloadLength > maxCapacity) {
+      var kind = encrypted ? 'encrypted payload' : 'message';
+      showError('Message too long! Your ' + kind + ' is ' + payloadLength.toLocaleString() +
                 ' bytes but this image can only hide ' + maxCapacity.toLocaleString() +
                 ' bytes with ' + lsbBits + '-LSB mode. Please use a larger image or shorter message.');
+      restoreButton();
       return;
     }
 
     if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
       showError('Web Workers and OffscreenCanvas are required. Please use a modern browser.');
+      restoreButton();
       return;
     }
 
-    var previewBits = Math.min(BINARY_PREVIEW_BITS, totalMessageBits);
-    var magicBinary = MAGIC_V3;
-    var modeBinary = lsbBits.toString(2).padStart(4, '0');
-    var reservedBinary = '0000';
-    var lengthBinary = messageBytes.length.toString(2).padStart(32, '0');
-    var sentinelBinary = magicBinary + modeBinary + reservedBinary + lengthBinary;
-    var previewParts = [];
-    for (var p = 0; p < previewBits; p++) previewParts.push(getBit(messageBytes, p) ? '1' : '0');
-    var binaryPreview = sentinelBinary + previewParts.join('');
-    if (totalMessageBits > BINARY_PREVIEW_BITS) {
-      binaryPreview += ' ... truncated (' + totalMessageBits.toLocaleString() + ' bits total)';
-    }
-
+    // Snapshot pixels and canvas contexts synchronously, before any await,
+    // so a mid-operation image swap can't poison the result.
+    var originalContext = originalCanvas.getContext('2d', { willReadFrequently: true });
+    var messageContext = messageCanvas.getContext('2d', { willReadFrequently: true });
     messageCanvas.width = width;
     messageCanvas.height = height;
+    var original = originalContext.getImageData(0, 0, width, height);
+    var buffer = original.data.buffer;
+
+    var flags = encrypted ? FLAGS_ENCRYPTED : FLAGS_PLAINTEXT;
+    var payloadBytes;
+
+    if (encrypted) {
+      setBusy('Encrypting...');
+      var sentinelAad = buildSentinelBytes(lsbBits, flags, payloadLength);
+      var password = document.getElementById('encrypt-password').value;
+      try {
+        payloadBytes = await StegCrypto.encryptPayload(messageBytes, password, sentinelAad);
+      } catch (err) {
+        if (encodeGeneration !== myGen) { exitStale(); return; }
+        showError(err.message || 'Encryption failed.');
+        restoreButton();
+        return;
+      }
+      if (encodeGeneration !== myGen) { exitStale(); return; }
+      setBusy('Encoding...');
+    } else {
+      payloadBytes = messageBytes;
+    }
+
+    // Binary preview reflects the on-disk payload bits.
+    var totalPayloadBits = payloadBytes.length * 8;
+    var previewBits = Math.min(BINARY_PREVIEW_BITS, totalPayloadBits);
+    var sentinelBinary = MAGIC_V3 +
+      lsbBits.toString(2).padStart(4, '0') +
+      flags +
+      payloadBytes.length.toString(2).padStart(32, '0');
+    var previewParts = [];
+    for (var p = 0; p < previewBits; p++) previewParts.push(getBit(payloadBytes, p) ? '1' : '0');
+    var binaryPreview = sentinelBinary + previewParts.join('');
+    if (totalPayloadBits > BINARY_PREVIEW_BITS) {
+      binaryPreview += ' ... truncated (' + totalPayloadBits.toLocaleString() + ' bits total)';
+    }
 
     DOWNLOAD_CACHE.building['encoded'] = true;
     updateDownloadAvailability();
 
-    var original = originalContext.getImageData(0, 0, width, height);
-    var buffer = original.data.buffer;
-    var worker = startWorker('encode', 'lsb-encode-worker.js');
+    var worker = startWorker('encode', 'lsb-encode-worker.js?v=2');
     worker.onmessage = function(ev) {
       finishWorker('encode', worker);
+      if (encodeGeneration !== myGen) {
+        DOWNLOAD_CACHE.building['encoded'] = false;
+        updateDownloadAvailability();
+        exitStale();
+        return;
+      }
       if (ev.data.type === 'error') {
         DOWNLOAD_CACHE.building['encoded'] = false;
         updateDownloadAvailability();
         showError(ev.data.message);
-        if (encodeButton) encodeButton.disabled = false;
+        restoreButton();
         return;
       }
       var resultImageData = new ImageData(new Uint8ClampedArray(ev.data.data), ev.data.width, ev.data.height);
@@ -1270,115 +1479,190 @@ function encodeMessage() {
       nulledCanvas.height = 0;
       document.querySelector('.binary .card-body').textContent = binaryPreview;
       document.querySelector('.binary').style.display = 'block';
-      if (encodeButton) encodeButton.disabled = false;
+      restoreButton();
     };
     worker.onerror = function(err) {
       finishWorker('encode', worker);
+      if (encodeGeneration !== myGen) { exitStale(); return; }
       DOWNLOAD_CACHE.building['encoded'] = false;
       updateDownloadAvailability();
       showError(err.message || 'Worker error');
-      if (encodeButton) encodeButton.disabled = false;
+      restoreButton();
     };
     workerPending = true;
     worker.postMessage({
       type: 'encode',
       imageData: { width: width, height: height, data: buffer },
-      messageBytes: Array.from(messageBytes),
-      lsbBits: lsbBits
+      messageBytes: Array.from(payloadBytes),
+      lsbBits: lsbBits,
+      flags: flags
     }, [buffer]);
     return;
-    
+
   } catch (error) {
     showError('Error encoding message: ' + error.message);
     console.error('Encoding error:', error);
-  } finally {
-    if (!workerPending && encodeButton) encodeButton.disabled = false;
+    // Idempotent: safe to call even if worker.onmessage/onerror already fired.
+    restoreButton();
   }
 }
 
+var DECODE_TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 function decodeMessage() {
   var decodeButton = document.querySelector('button.decode-btn');
-  
-  // Rate limiting - disable button during processing
-  if (decodeButton) {
-    decodeButton.disabled = true;
-  }
-  
+  // Hard-coded label (see encodeMessage for why we don't capture textContent).
+  var ORIGINAL_LABEL = 'Decode';
+  var setBusy = function(txt) { if (decodeButton) decodeButton.textContent = txt; };
+  var exitHandled = false;
+  var _restoreButtonRaw = function() {
+    if (decodeButton) {
+      decodeButton.disabled = false;
+      decodeButton.textContent = ORIGINAL_LABEL;
+    }
+  };
+  var restoreButton = function() {
+    if (exitHandled) return;
+    exitHandled = true;
+    decodeInFlight--;
+    _restoreButtonRaw();
+  };
+  var exitStale = function() {
+    if (exitHandled) return;
+    exitHandled = true;
+    decodeInFlight--;
+    if (decodeInFlight === 0) _restoreButtonRaw();
+  };
+
+  if (decodeButton) decodeButton.disabled = true;
+  decodeInFlight++;
+
+  // Start a new generation; invalidates any in-flight predecessor.
+  var myGen = ++decodeGeneration;
+
   var errorDecode = DOM_CACHE.get('errorDecodeElement');
-  if (errorDecode) {
-    errorDecode.style.display = 'none';
-  }
-  
+  if (errorDecode) errorDecode.style.display = 'none';
+
   var decodeWorkerPending = false;
   try {
     var originalCanvas = DOM_CACHE.get('decodeCanvas');
-    
     if (!originalCanvas) {
       showError('Please upload an image first.', 'decode');
+      restoreButton();
       return;
     }
-    
+
     var width = originalCanvas.width;
     var height = originalCanvas.height;
-    
     if (!validateImageDimensions(width, height)) {
+      restoreButton();
       return;
     }
-    
     if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
       showError('Web Workers and OffscreenCanvas are required. Please use a modern browser.');
+      restoreButton();
       return;
     }
-    
-    var originalContext = originalCanvas.getContext("2d", { willReadFrequently: true });
+
+    var originalContext = originalCanvas.getContext('2d', { willReadFrequently: true });
     var original = originalContext.getImageData(0, 0, width, height);
     var buffer = original.data.buffer;
-    
+
     decodeWorkerPending = true;
-    var worker = startWorker('decode', 'lsb-decode-worker.js');
+    var worker = startWorker('decode', 'lsb-decode-worker.js?v=2');
     worker.onmessage = function(ev) {
       finishWorker('decode', worker);
+      if (decodeGeneration !== myGen) { exitStale(); return; }
       if (ev.data.type === 'error') {
         showError(ev.data.message, 'decode');
-        if (decodeButton) decodeButton.disabled = false;
+        restoreButton();
         return;
       }
+
       var messageLength = ev.data.messageLength;
       var lsbBits = ev.data.lsbBits;
       var maxCapacity = ev.data.maxCapacity;
-      var output = ev.data.output;
-      
-      var utilizationPercent = Math.round((messageLength / maxCapacity) * 100);
-      var availablePercent = 100 - utilizationPercent;
-      
-      document.getElementById('decode-capacity-used-bar').style.width = utilizationPercent + '%';
-      document.getElementById('decode-capacity-used-text').textContent = 'Used: ' + utilizationPercent + '%';
-      document.getElementById('decode-capacity-available-bar').style.width = availablePercent + '%';
-      document.getElementById('decode-capacity-available-text').textContent = 'Available: ' + availablePercent + '%';
-      document.getElementById('decode-capacity-details').textContent = 
-        'Decoded ' + messageLength.toLocaleString() + ' bytes of ' + maxCapacity.toLocaleString() + ' total capacity (' + lsbBits + '-LSB mode). ' + 
-        (maxCapacity - messageLength).toLocaleString() + ' bytes unused.';
-      
-      document.querySelector('.decode-capacity-bar').style.display = 'block';
-      document.getElementById('decoded-message-text').textContent = output;
-      document.querySelector('.binary-decode').style.display = 'block';
-      if (decodeButton) decodeButton.disabled = false;
+      var flags = ev.data.flags;
+
+      if (ev.data.encrypted) {
+        if (!cryptoAvailable()) {
+          showError('This image is encrypted but the Web Crypto API is unavailable. Load the page over HTTPS or localhost.', 'decode');
+          restoreButton();
+          return;
+        }
+        var pwEl = document.getElementById('decrypt-password');
+        var password = pwEl ? pwEl.value : '';
+        if (password.length === 0) {
+          showError('This image is encrypted. Please enter the password.', 'decode');
+          restoreButton();
+          return;
+        }
+        setBusy('Decrypting...');
+        var payloadBytes = new Uint8Array(ev.data.payloadBytes);
+        var sentinelAad = buildSentinelBytes(lsbBits, flags, messageLength);
+        StegCrypto.decryptPayload(payloadBytes, password, sentinelAad).then(function(plaintext) {
+          if (decodeGeneration !== myGen) { exitStale(); return; }
+          var text;
+          try {
+            text = sanitizeDecodedMessage(DECODE_TEXT_DECODER.decode(plaintext));
+          } catch (utf8Err) {
+            showError('Decrypted bytes are not valid UTF-8. The image may be corrupted.', 'decode');
+            restoreButton();
+            return;
+          }
+          renderDecodeOutput(text, plaintext.length, messageLength, lsbBits, maxCapacity, true);
+          restoreButton();
+        }).catch(function(err) {
+          if (decodeGeneration !== myGen) { exitStale(); return; }
+          showError(err.message || 'Wrong password or corrupted image.', 'decode');
+          restoreButton();
+        });
+        return;
+      }
+
+      // Plaintext path: worker already decoded + sanitized output.
+      renderDecodeOutput(ev.data.output, messageLength, messageLength, lsbBits, maxCapacity, false);
+      restoreButton();
     };
     worker.onerror = function(err) {
       finishWorker('decode', worker);
+      if (decodeGeneration !== myGen) { exitStale(); return; }
       showError(err.message || 'Worker error', 'decode');
-      if (decodeButton) decodeButton.disabled = false;
+      restoreButton();
     };
     worker.postMessage({
       type: 'decode',
       imageData: { width: width, height: height, data: buffer }
     }, [buffer]);
     return;
-    
+
   } catch (error) {
     showError('Error decoding message: ' + error.message, 'decode');
     console.error('Decoding error:', error);
-  } finally {
-    if (!decodeWorkerPending && decodeButton) decodeButton.disabled = false;
+    // Idempotent: safe even if a worker/decrypt callback already restored.
+    restoreButton();
   }
+}
+
+function renderDecodeOutput(text, plaintextLength, storedLength, lsbBits, maxCapacity, encrypted) {
+  var utilizationPercent = Math.round((storedLength / maxCapacity) * 100);
+  var availablePercent = 100 - utilizationPercent;
+
+  document.getElementById('decode-capacity-used-bar').style.width = utilizationPercent + '%';
+  document.getElementById('decode-capacity-used-text').textContent = 'Used: ' + utilizationPercent + '%';
+  document.getElementById('decode-capacity-available-bar').style.width = availablePercent + '%';
+  document.getElementById('decode-capacity-available-text').textContent = 'Available: ' + availablePercent + '%';
+
+  var detail = 'Decoded ' + storedLength.toLocaleString() + ' bytes of ' +
+               maxCapacity.toLocaleString() + ' total capacity (' + lsbBits + '-LSB mode). ' +
+               (maxCapacity - storedLength).toLocaleString() + ' bytes unused.';
+  if (encrypted) {
+    detail += ' Encrypted payload: ' + storedLength.toLocaleString() + ' bytes on disk, ' +
+              plaintextLength.toLocaleString() + ' bytes plaintext (45 bytes overhead).';
+  }
+  document.getElementById('decode-capacity-details').textContent = detail;
+
+  document.querySelector('.decode-capacity-bar').style.display = 'block';
+  document.getElementById('decoded-message-text').textContent = text;
+  document.querySelector('.binary-decode').style.display = 'block';
 }

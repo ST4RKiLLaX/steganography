@@ -81,6 +81,7 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 - XSS protection with safe DOM manipulation
 - v3 format: 56-bit fixed sentinel (0xAA55 magic + mode + reserved + length)
 - Two-layer architecture: 1-LSB sentinel + N-LSB message
+- Optional AES-256-GCM confidentiality mode (password-based, PBKDF2-SHA256 600k iterations); sentinel is included in the GCM additional data so flipping the LSB mode, flag bits, or length makes decryption fail
 - Memory leak prevention and rate limiting
 - Removed GIF support (incompatible with LSB algorithm)
 
@@ -118,11 +119,52 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 - Bootstrap 5.3.8
 - HTML5 Canvas API
 - Web Workers + OffscreenCanvas for encode/decode
+- Web Crypto API (PBKDF2-SHA256 + AES-256-GCM) for the optional confidentiality mode
 - CSS Variables for theming
 - No external dependencies for core functionality
 
 ### Browser Requirements
 - Web Workers and OffscreenCanvas required (modern browsers; Safari 16.4+)
+- Encryption requires a secure context (HTTPS or `localhost`) for the Web Crypto API
+
+### Confidentiality mode
+
+The optional **Encrypt with password** switch runs the message through AES-256-GCM
+before it is hidden in the image. The key is derived from the password with
+PBKDF2-SHA256 (600,000 iterations), both from the browser's built-in Web Crypto
+API, so no third-party crypto library is required.
+
+The encrypted payload layout (version 1, 45 bytes of overhead) is:
+
+```
+byte 0        version (0x01)
+bytes 1-16    salt (16 random bytes)
+bytes 17-28   IV (12 random bytes)
+bytes 29..    ciphertext + GCM authentication tag (plaintext + 16 bytes)
+```
+
+The GCM additional data is 8 bytes: `[version, ...canonical 7-byte sentinel]`.
+The sentinel encodes the LSB mode, a 4-bit flags field (`1000` for encrypted),
+and the 32-bit payload length, so flipping any of these in the image makes
+decryption fail with a generic "Wrong password or corrupted image" error.
+
+**What this gives you**
+- Hides *what the message says* and detects tampering of the ciphertext,
+  sentinel, salt, IV, or version.
+- Separates cleanly from the LSB layer, so encryption can be audited in
+  isolation (`crypto.js` has no DOM or steganography dependencies).
+
+**What it does not give you**
+- Steganographic concealment: the `0xAA55` magic number and the encryption
+  flag still reveal that a message exists and is encrypted.
+- Password recovery: there is none. Pick a strong password.
+- Resilience to re-encoding: cropping, resizing, or re-saving the PNG (which
+  many social-media sites do automatically) destroys the hidden message.
+
+**Legacy decoder behavior:** older versions of this app (before the
+confidentiality mode) do not recognize the encryption flag. Opening a new
+encrypted image in an older build triggers the strict UTF-8 decode in the
+decode worker, which fails rather than displaying garbage.
 
 ### License
 Original work © 2014 stylesuxx  

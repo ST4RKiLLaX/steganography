@@ -1,4 +1,4 @@
-importScripts('constants.js');
+importScripts('constants.js?v=3');
 
 self.onmessage = function(e) {
   if (e.data.type !== 'encode') return;
@@ -7,9 +7,15 @@ self.onmessage = function(e) {
   var pixel = new Uint8ClampedArray(e.data.imageData.data);
   var messageBytes = new Uint8Array(e.data.messageBytes);
   var lsbBits = e.data.lsbBits;
+  var flags = e.data.flags || FLAGS_PLAINTEXT;
   var totalMessageBits = messageBytes.length * 8;
 
   try {
+    if (!isValidFlags(flags)) {
+      self.postMessage({ type: 'error', message: 'Unsupported format flags.' });
+      return;
+    }
+
     for (var i = 0; i < SENTINEL_PIXELS * 4; i += 4) {
       for (var offset = 0; offset < 3; offset++) {
         pixel[i + offset] = (pixel[i + offset] & 0xFE) & 0xFF;
@@ -24,9 +30,8 @@ self.onmessage = function(e) {
 
     var magicBinary = MAGIC_V3;
     var modeBinary = lsbBits.toString(2).padStart(4, '0');
-    var reservedBinary = '0000';
     var lengthBinary = messageBytes.length.toString(2).padStart(32, '0');
-    var sentinelBinary = magicBinary + modeBinary + reservedBinary + lengthBinary;
+    var sentinelBinary = magicBinary + modeBinary + flags + lengthBinary;
 
     var sentinelCounter = 0;
     var messageCounter = 0;
