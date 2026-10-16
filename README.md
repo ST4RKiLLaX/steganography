@@ -115,7 +115,7 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 
 ### Tech Stack
 - Pure vanilla JavaScript (no jQuery)
-- Bootstrap 5.3.3
+- Bootstrap 5.3.8
 - HTML5 Canvas API
 - Web Workers + OffscreenCanvas for encode/decode
 - CSS Variables for theming

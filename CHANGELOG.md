@@ -29,7 +29,7 @@
 
 **Framework Modernization**
 - Original: Bootstrap 3.3.1 (2014), jQuery 1.11.1
-- New: Bootstrap 5.3.3, Pure JavaScript (no jQuery)
+- New: Bootstrap 5.3.8, Pure JavaScript (no jQuery)
 - Impact: Modern styling, faster performance, no dependency vulnerabilities
 
 **Capacity Information Display**
@@ -284,7 +284,7 @@
 
 **Dependencies**
 - Original: jQuery 1.11.1 (known vulnerabilities), Bootstrap 3.3.1 (EOL)
-- New: Bootstrap 5.3.3 (current), no jQuery
+- New: Bootstrap 5.3.8 (current), no jQuery
 - Impact: No external JavaScript library vulnerabilities
 
 ---
