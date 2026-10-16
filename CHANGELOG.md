@@ -542,6 +542,11 @@ HEADER_VERSION (v2)
 - **Change:** Capacity badge now expands and scrolls to the LSB card instead of opening the modal
 - **Technical:** `updateModalWithImageData()` renamed to `updateLsbInfoWithImageData()`; live image stats render into `#lsbImageInfo` and `#lsbCalcSteps`
 
+**Download via File System Access API**
+- **Change:** `downloadCachedImage()` now calls `window.showSaveFilePicker()` and writes the cached PNG blob directly to the user-chosen file via `createWritable()`
+- **Benefit:** Bypasses Chrome/Edge's download manager, so there is no `.crdownload` round-trip and no download-shelf scanning delay after clicking Save
+- **Compatibility:** Falls back to the previous anchor-click download in Firefox, Safari, and any browser without the File System Access API; cancelling the save dialog (`AbortError`) is silently ignored
+
 ---
 
 **Document Version:** 2.0  

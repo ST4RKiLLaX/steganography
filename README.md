@@ -106,6 +106,7 @@ This project is an enhanced fork of the original [Steganography Online](http://s
 - **OffscreenCanvas**: PNG conversion via `convertToBlob` in Workers (Chrome/Firefox friendly)
 - **Memory Optimization**: Immediate release of intermediate buffers; blob URLs revoked when cache is invalidated (new encode, tab switch)
 - **Download Optimization**: Pre-computed blob caching for instant save prompts; append link to DOM before click (Chrome-compatible)
+- **Direct Save (Chrome/Edge)**: File System Access API (`showSaveFilePicker`) writes the PNG straight to the user-chosen file, bypassing the browser's download manager and its `.crdownload`/scanning delays; falls back to anchor download in Firefox/Safari
 
 **Accessibility:**
 - Keyboard navigation support

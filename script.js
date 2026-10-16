@@ -430,18 +430,53 @@ function showError(message, context) {
   // Users can manually scroll past or will be cleared on next encode/decode
 }
 
-function downloadCachedImage(type) {
+async function downloadCachedImage(type) {
   if (!isDownloadReady(type)) {
     showError('Download is not ready yet. Please wait for encoding to finish.');
     return;
   }
-  
+
   var entry = DOWNLOAD_CACHE[type];
-  var objectUrl = entry.objectUrl;
-  var link = document.createElement('a');
   var timestamp = new Date().getTime();
-  link.download = 'steganography-' + type + '-' + timestamp + '.png';
-  link.href = objectUrl;
+  var filename = 'steganography-' + type + '-' + timestamp + '.png';
+
+  // Preferred path: File System Access API (Chrome/Edge). Writes directly to
+  // the user-chosen file, skipping Chrome's download manager (no .crdownload
+  // round-trip, no download-shelf scanning delay).
+  //
+  // Must call showSaveFilePicker synchronously (no awaits before it) so the
+  // user activation from the click is preserved.
+  if (window.showSaveFilePicker) {
+    try {
+      var handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{
+          description: 'PNG image',
+          accept: { 'image/png': ['.png'] }
+        }]
+      });
+      try {
+        var writable = await handle.createWritable();
+        await writable.write(entry.blob);
+        await writable.close();
+        return;
+      } catch (writeErr) {
+        showError('Error saving file: ' + (writeErr && writeErr.message ? writeErr.message : writeErr));
+        return;
+      }
+    } catch (pickerErr) {
+      // User cancelled the save dialog - silently abort.
+      if (pickerErr && pickerErr.name === 'AbortError') return;
+      // Any other picker-time error (e.g. SecurityError in sandboxed
+      // contexts): fall through to the anchor download.
+    }
+  }
+
+  // Fallback: anchor-click download for browsers without the File System
+  // Access API (Firefox, Safari) or when the picker is unavailable.
+  var link = document.createElement('a');
+  link.download = filename;
+  link.href = entry.objectUrl;
   document.body.appendChild(link);
   link.click();
   link.remove();
