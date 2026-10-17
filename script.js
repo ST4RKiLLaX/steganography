@@ -229,6 +229,26 @@ var decodeInFlight = 0;
 function bumpEncodeGeneration() { encodeGeneration++; }
 function bumpDecodeGeneration() { decodeGeneration++; }
 
+// Exact decoded text held in memory so the Copy and Download buttons work on
+// the original string (no round-trip through textContent, which could
+// normalize whitespace or line endings in some edge cases).
+var LAST_DECODED_TEXT = '';
+
+function setDecodedActionsEnabled(enabled) {
+  var copyBtn = document.getElementById('decoded-copy-btn');
+  var dlBtn = document.getElementById('decoded-download-btn');
+  if (copyBtn) copyBtn.disabled = !enabled;
+  if (dlBtn) dlBtn.disabled = !enabled;
+  if (!enabled) resetDecodedCopyLabel();
+}
+
+function resetDecodedCopyLabel() {
+  var label = document.getElementById('decoded-copy-label');
+  var btn = document.getElementById('decoded-copy-btn');
+  if (label) label.textContent = 'Copy';
+  if (btn) btn.classList.remove('btn-outline-success', 'btn-outline-danger');
+}
+
 function clearDecodedDisplay() {
   var text = document.getElementById('decoded-message-text');
   if (text) text.textContent = '';
@@ -236,6 +256,8 @@ function clearDecodedDisplay() {
   if (binary) binary.style.display = 'none';
   var cap = document.querySelector('.decode-capacity-bar');
   if (cap) cap.style.display = 'none';
+  LAST_DECODED_TEXT = '';
+  setDecodedActionsEnabled(false);
 }
 
 function clearPasswords() {
@@ -553,6 +575,87 @@ async function downloadCachedImage(type) {
 // Make downloadCachedImage globally accessible
 window.downloadCanvasImage = downloadCachedImage;
 
+// Copies LAST_DECODED_TEXT to the system clipboard. Prefers the async
+// Clipboard API; falls back to a hidden textarea + execCommand('copy') for
+// older browsers (older Safari/Firefox over http://).
+async function copyDecodedToClipboard() {
+  var text = LAST_DECODED_TEXT;
+  if (!text) return;
+  var btn = document.getElementById('decoded-copy-btn');
+  var label = document.getElementById('decoded-copy-label');
+  var ok = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.left = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { ok = document.execCommand && document.execCommand('copy'); }
+      finally { document.body.removeChild(ta); }
+    }
+  } catch (err) {
+    ok = false;
+  }
+  if (btn && label) {
+    label.textContent = ok ? 'Copied!' : 'Copy failed';
+    btn.classList.remove('btn-outline-success', 'btn-outline-danger');
+    btn.classList.add(ok ? 'btn-outline-success' : 'btn-outline-danger');
+    setTimeout(resetDecodedCopyLabel, 1500);
+  }
+}
+
+// Saves LAST_DECODED_TEXT as a .txt file. Mirrors downloadCachedImage:
+// File System Access API (direct write, no download-manager delay) with an
+// anchor-click fallback for Firefox/Safari.
+async function downloadDecodedMessage() {
+  var text = LAST_DECODED_TEXT;
+  if (!text) return;
+  var filename = 'decoded-message-' + new Date().getTime() + '.txt';
+  var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+
+  if (window.showSaveFilePicker) {
+    try {
+      var handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{ description: 'Text file', accept: { 'text/plain': ['.txt'] } }]
+      });
+      try {
+        var writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return;
+      } catch (writeErr) {
+        showError('Error saving file: ' + (writeErr && writeErr.message ? writeErr.message : writeErr), 'decode');
+        return;
+      }
+    } catch (pickerErr) {
+      if (pickerErr && pickerErr.name === 'AbortError') return;
+      // Fall through to the anchor fallback on any other picker error.
+    }
+  }
+
+  var url = URL.createObjectURL(blob);
+  try {
+    var link = document.createElement('a');
+    link.download = filename;
+    link.href = url;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    // Revoke on the next tick so the download has started in all browsers.
+    setTimeout(function() { URL.revokeObjectURL(url); }, 0);
+  }
+}
+
 // Event listeners setup
 document.addEventListener('DOMContentLoaded', function() {
   // File input listeners
@@ -756,6 +859,22 @@ document.addEventListener('DOMContentLoaded', function() {
     downloadEncodedBtn.addEventListener('click', function(e) {
       e.stopPropagation();
       window.downloadCanvasImage('encoded');
+    });
+  }
+
+  // Decoded-message action buttons (shown in the Decoded Message card header).
+  var copyDecodedBtn = document.getElementById('decoded-copy-btn');
+  if (copyDecodedBtn) {
+    copyDecodedBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      copyDecodedToClipboard();
+    });
+  }
+  var dlDecodedBtn = document.getElementById('decoded-download-btn');
+  if (dlDecodedBtn) {
+    dlDecodedBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      downloadDecodedMessage();
     });
   }
 
@@ -1665,4 +1784,10 @@ function renderDecodeOutput(text, plaintextLength, storedLength, lsbBits, maxCap
   document.querySelector('.decode-capacity-bar').style.display = 'block';
   document.getElementById('decoded-message-text').textContent = text;
   document.querySelector('.binary-decode').style.display = 'block';
+
+  // Hold the exact decoded string for the Copy / Download buttons and enable
+  // them. Any stale "Copied!" label from a previous decode is reset.
+  LAST_DECODED_TEXT = text;
+  resetDecodedCopyLabel();
+  setDecodedActionsEnabled(true);
 }

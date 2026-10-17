@@ -48,6 +48,8 @@ so it can't be read even if the image is inspected.
 - Automatic LSB mode detection from the fixed sentinel
 - Automatic encrypted-image detection with a password prompt
 - Manual mode override and capacity utilization readout
+- Copy and Download (`.txt`) buttons on the decoded message, with direct
+  save via `showSaveFilePicker` and anchor fallback
 
 **UX**
 - Dark / light theme toggle with `localStorage` persistence

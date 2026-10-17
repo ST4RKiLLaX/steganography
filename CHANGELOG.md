@@ -558,6 +558,13 @@ HEADER_VERSION (v2)
 - **Legacy compatibility:** older builds that ignore the flag now hit the decode worker's strict UTF-8 decode (`{ fatal: true }`) and fail cleanly instead of displaying garbage
 - **New file:** `crypto.js` (DOM-free so `tests.html` can exercise it directly); `parseSentinelFromPixels`, `sanitizeDecodedMessage`, and the new `buildSentinelBytes` moved into `constants.js` to share one implementation across workers and the main thread
 
+**Decoded Message Actions (Copy / Download)**
+- **Change:** The Decoded Message card header now hosts two small buttons: Copy (writes the plaintext to the clipboard) and Download (saves it as `decoded-message-<timestamp>.txt`)
+- **Copy:** Prefers `navigator.clipboard.writeText`; falls back to a hidden-textarea + `document.execCommand('copy')` for older browsers / insecure contexts. Shows a 1.5 s "Copied!" (or "Copy failed") label with a success/danger outline for feedback
+- **Download:** Mirrors `downloadCachedImage` — `window.showSaveFilePicker()` for direct writes in Chrome/Edge, anchor-click fallback for Firefox/Safari; blob URL revoked on the next tick
+- **State:** Both buttons are disabled when there's no decoded message. `clearDecodedDisplay()` wipes the in-memory `LAST_DECODED_TEXT`, disables the buttons, and resets any stale "Copied!" label; `renderDecodeOutput` re-populates and re-enables them
+- **Accessibility:** `aria-label` on each button describing the full action; visible emoji icons marked `aria-hidden`; button text ("Copy", "Download") readable by screen readers
+
 ---
 
 **Document Version:** 2.0  
