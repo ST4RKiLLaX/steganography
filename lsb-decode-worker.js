@@ -1,4 +1,4 @@
-importScripts('constants.js?v=4');
+importScripts('constants.js?v=5');
 
 var TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
@@ -15,6 +15,7 @@ self.onmessage = function(e) {
     var isV3 = parsed.isV3;
     var flags = parsed.flags;
     var isEncrypted = parsed.isEncrypted;
+    var isCompressed = parsed.isCompressed;
 
     if (!isV3) {
       self.postMessage({ type: 'error', message: 'This image does not contain a valid v3 steganographic message. Please ensure the image was encoded with this tool.' });
@@ -93,8 +94,8 @@ self.onmessage = function(e) {
     if (isEncrypted) {
       // Validate payload framing (version, length) before passing to the
       // main thread so a bad payload never reaches PBKDF2. The container
-      // sniff happens on the main thread after decryption, since the
-      // worker cannot see plaintext here.
+      // sniff (and any inflate) happen on the main thread after decryption,
+      // since the worker cannot see plaintext here.
       if (byteArray[0] !== ENCRYPTION_PAYLOAD_VERSION) {
         self.postMessage({ type: 'error', message: 'Unsupported encryption version: ' + byteArray[0] + '.' });
         return;
@@ -102,6 +103,25 @@ self.onmessage = function(e) {
       self.postMessage({
         type: 'result',
         encrypted: true,
+        compressed: isCompressed,
+        payloadBytes: byteArray.buffer,
+        messageLength: messageLength,
+        lsbBits: lsbBits,
+        flags: flags,
+        maxCapacity: maxCapacity
+      }, [byteArray.buffer]);
+      return;
+    }
+
+    // Plaintext-but-compressed: the raw bytes are deflate-raw, so the worker
+    // can neither sniff the container magic nor UTF-8 decode them. Hand the
+    // compressed bytes to the main thread, which inflates (with a size cap)
+    // and then does the file/text disambiguation.
+    if (isCompressed) {
+      self.postMessage({
+        type: 'result',
+        encrypted: false,
+        compressed: true,
         payloadBytes: byteArray.buffer,
         messageLength: messageLength,
         lsbBits: lsbBits,
@@ -134,6 +154,7 @@ self.onmessage = function(e) {
       self.postMessage({
         type: 'result',
         encrypted: false,
+        compressed: false,
         kind: 'file',
         fileBytes: fileCopy.buffer,
         filename: container.filename,
@@ -154,6 +175,7 @@ self.onmessage = function(e) {
     self.postMessage({
       type: 'result',
       encrypted: false,
+      compressed: false,
       kind: 'text',
       output: output,
       messageLength: messageLength,

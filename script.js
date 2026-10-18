@@ -245,6 +245,14 @@ var LAST_DECODED_FILE = null;
 // number and encode doesn't need to await an ArrayBuffer during setBusy.
 var SECRET_FILE = null;
 
+// Debounce + memo for the live capacity analysis's compression probe, so we
+// don't deflate the payload on every keystroke. Keyed by a cheap signature
+// of the raw bytes. Compression is purely manual (the user's toggle); the
+// probe only runs the live size refinement when the toggle is on.
+var compressionAnalysisTimer = null;
+var COMPRESSION_CACHE = null;   // { sig, compressedLength }
+var COMPRESSION_ANALYSIS_DEBOUNCE_MS = 180;
+
 // The real ceiling on a hidden file is MAX_MESSAGE_LENGTH applied to the
 // whole container (the decoder's own limit), not the 50 MB carrier-image
 // cap. The absolute max raw-file size therefore depends on the container
@@ -344,6 +352,38 @@ function isEncryptionEnabled() {
 
 function cryptoAvailable() {
   return typeof StegCrypto !== 'undefined' && StegCrypto.isCryptoAvailable();
+}
+
+function isCompressionEnabled() {
+  var toggle = document.getElementById('compress-toggle');
+  return !!(toggle && toggle.checked && !toggle.disabled);
+}
+
+function compressionAvailable() {
+  return typeof StegCompress !== 'undefined' && StegCompress.isCompressionAvailable();
+}
+
+// Capacity error that explains whether compression was already applied or
+// attempted, so the user understands why a payload still doesn't fit.
+function showCompressionAwareCapacityError(payloadType, encrypted, compressed, wantedCompress, payloadLength, maxCapacity) {
+  var kind;
+  if (payloadType === 'file') {
+    kind = encrypted ? 'encrypted file container' : 'file container';
+  } else {
+    kind = encrypted ? 'encrypted payload' : 'message';
+  }
+  if (compressed) kind = 'compressed ' + kind;
+
+  var hint = payloadType === 'file'
+    ? 'Please use a larger carrier image or a smaller secret file.'
+    : 'Please use a larger image or shorter message.';
+  if (wantedCompress && !compressed && compressionAvailable()) {
+    hint = 'Compression did not shrink this payload (it may already be compressed). ' + hint;
+  }
+
+  showError('Payload too large! Your ' + kind + ' is ' + payloadLength.toLocaleString() +
+            ' bytes but this image can only hide ' + maxCapacity.toLocaleString() +
+            ' bytes. ' + hint);
 }
 
 // Returns true if passwords match and are non-empty. Updates inline
@@ -811,6 +851,23 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
+  // Compression toggle. Auto-enables at encode time when the payload won't
+  // fit; this manual switch forces it on for smaller payloads too.
+  var compressToggle = document.getElementById('compress-toggle');
+  var compressUnavailable = document.getElementById('compress-unavailable');
+  if (compressToggle) {
+    if (!compressionAvailable()) {
+      compressToggle.disabled = true;
+      compressToggle.checked = false;
+      if (compressUnavailable) compressUnavailable.style.display = 'block';
+    }
+    compressToggle.addEventListener('change', function() {
+      clearEncodedCaches();
+      bumpEncodeGeneration();
+      recomputePayloadAnalysis();
+    });
+  }
+
   function onEncryptPwInput() {
     clearEncodedCaches();
     bumpEncodeGeneration();
@@ -1198,15 +1255,21 @@ function computePayloadLengthForAnalysis() {
   var encrypted = isEncryptionEnabled();
   var type = getPayloadType();
   if (type === 'file') {
-    if (!SECRET_FILE) return { payloadBytes: 0, hasPayload: false, type: type, encrypted: encrypted };
+    if (!SECRET_FILE) return { payloadBytes: 0, hasPayload: false, type: type, encrypted: encrypted, rawBytes: null };
     var fnStr = SECRET_FILE.file.name || 'secret.bin';
     var mimeStr = SECRET_FILE.file.type || 'application/octet-stream';
     var fnLen = TEXT_ENCODER.encode(fnStr).length;
     var mimeLen = TEXT_ENCODER.encode(mimeStr).length;
-    var containerLen = FILE_CONTAINER_FIXED_OVERHEAD + fnLen + mimeLen + SECRET_FILE.bytes.length;
+    // Raw (uncompressed) container bytes - also what the live compression
+    // probe deflates. Building it copies the file, but file-mode analysis
+    // only reruns on select / toggle, not per keystroke.
+    var containerBytes = buildFileContainer(SECRET_FILE.bytes, fnStr, mimeStr);
+    var containerLen = containerBytes.length;
     var payload = encrypted ? containerLen + ENCRYPTION_OVERHEAD_BYTES : containerLen;
     return {
       payloadBytes: payload,
+      rawPayloadBytes: payload,
+      rawBytes: containerBytes,
       hasPayload: true,
       type: type,
       encrypted: encrypted,
@@ -1217,10 +1280,13 @@ function computePayloadLengthForAnalysis() {
     };
   }
   var text = DOM_CACHE.get('messageTextarea')?.value || '';
-  if (!text) return { payloadBytes: 0, hasPayload: false, type: type, encrypted: encrypted };
-  var byteCount = TEXT_ENCODER.encode(text).length;
+  if (!text) return { payloadBytes: 0, hasPayload: false, type: type, encrypted: encrypted, rawBytes: null };
+  var textBytes = TEXT_ENCODER.encode(text);
+  var byteCount = textBytes.length;
   var payloadText = encrypted ? byteCount + ENCRYPTION_OVERHEAD_BYTES : byteCount;
   return {
+    rawPayloadBytes: payloadText,
+    rawBytes: textBytes,
     payloadBytes: payloadText,
     hasPayload: true,
     type: type,
@@ -1233,10 +1299,111 @@ function computePayloadLengthForAnalysis() {
 // Shared entry point - rerun whenever anything that affects capacity math
 // changes (message input, file selection, encrypt toggle, payload-type
 // toggle, manual LSB override). Keeps the UI consistent across both modes.
+// Shows the uncompressed figures immediately, then refines with the real
+// compressed size (debounced, async) when compression is relevant.
 function recomputePayloadAnalysis() {
   var info = computePayloadLengthForAnalysis();
   updatePayloadCounterBadge(info);
   updateMessageAnalysis(info);
+  scheduleCompressionRefine(info);
+}
+
+function setCompressionNote(text, cls) {
+  var el = document.getElementById('compression-note');
+  if (!el) return;
+  if (!text) {
+    el.style.display = 'none';
+    el.textContent = '';
+    return;
+  }
+  el.style.display = 'block';
+  el.textContent = text;
+  el.className = 'small mt-1 ' + (cls || 'text-muted');
+}
+
+// When the user has turned compression on, deflate the payload (debounced) to
+// refine the capacity UI with the real compressed size. Compression is manual
+// only - this never enables it on its own.
+function scheduleCompressionRefine(info) {
+  if (compressionAnalysisTimer) {
+    clearTimeout(compressionAnalysisTimer);
+    compressionAnalysisTimer = null;
+  }
+  if (!info.hasPayload || !info.rawBytes) { setCompressionNote(''); return; }
+  if (!isCompressionEnabled()) { setCompressionNote(''); return; }
+  if (!compressionAvailable()) {
+    setCompressionNote('Compression unavailable in this browser; the payload will be stored uncompressed.', 'text-warning');
+    return;
+  }
+  var canvas = DOM_CACHE.get('originalCanvas');
+  if (!canvas || canvas.width === 0) { setCompressionNote(''); return; }
+
+  var myGen = encodeGeneration;
+  compressionAnalysisTimer = setTimeout(function() {
+    runCompressionRefine(info, myGen);
+  }, COMPRESSION_ANALYSIS_DEBOUNCE_MS);
+}
+
+async function runCompressionRefine(info, myGen) {
+  if (encodeGeneration !== myGen) return;
+
+  var sig = info.type + ':' + info.encrypted + ':' + info.rawBytes.length + ':' + crc32(info.rawBytes);
+  var compressedLength;
+  if (COMPRESSION_CACHE && COMPRESSION_CACHE.sig === sig) {
+    compressedLength = COMPRESSION_CACHE.compressedLength;
+  } else {
+    var deflated;
+    try {
+      deflated = await StegCompress.compress(info.rawBytes);
+    } catch (e) {
+      return;  // leave the uncompressed view in place
+    }
+    if (encodeGeneration !== myGen) return;
+    compressedLength = deflated.length;
+    COMPRESSION_CACHE = { sig: sig, compressedLength: compressedLength };
+  }
+
+  var rawLen = info.rawBytes.length;
+  var helps = compressedLength < rawLen;
+
+  if (!helps) {
+    // Compression wouldn't shrink the payload, so it won't actually be used.
+    setCompressionNote(
+      'Compression would not shrink this payload (it looks already-compressed); it will be stored as-is.',
+      'text-muted');
+    return;
+  }
+
+  // Re-render capacity with the effective compressed size and mark it.
+  var compressedOnDisk = compressedLength + (info.encrypted ? ENCRYPTION_OVERHEAD_BYTES : 0);
+  var compressedInfo = {
+    payloadBytes: compressedOnDisk,
+    hasPayload: true,
+    type: info.type,
+    encrypted: info.encrypted
+  };
+  updateMessageAnalysis(compressedInfo);
+  updateCompressedCounterBadge(info, rawLen, compressedLength);
+
+  var ratio = Math.max(0, Math.round((1 - (compressedLength / rawLen)) * 100));
+  setCompressionNote(
+    'Compression on: ' +
+    rawLen.toLocaleString() + ' to ' + compressedLength.toLocaleString() +
+    ' bytes (' + ratio + '% smaller) before ' + (info.encrypted ? 'encryption and ' : '') + 'embedding.',
+    'text-success');
+}
+
+function updateCompressedCounterBadge(info, rawLen, compressedLength) {
+  var counterBadge = document.getElementById('message-counter-badge');
+  if (!counterBadge) return;
+  var encSuffix = info.encrypted ? ' + ' + ENCRYPTION_OVERHEAD_BYTES + ' enc' : '';
+  if (info.type === 'file') {
+    counterBadge.textContent = '📎 ' + info.filename + ' (' + rawLen.toLocaleString() +
+      ' to ' + compressedLength.toLocaleString() + ' bytes compressed' + encSuffix + ')';
+  } else {
+    counterBadge.textContent = '📝 ' + (info.charCount || 0).toLocaleString() + ' chars (' +
+      rawLen.toLocaleString() + ' to ' + compressedLength.toLocaleString() + ' bytes compressed' + encSuffix + ')';
+  }
 }
 
 function updatePayloadCounterBadge(info) {
@@ -1304,7 +1471,7 @@ function updateMessageAnalysis(infoOrText) {
   } else {
     var analysis = calculateOptimalLSBMode(payloadBytes, canvas.width, canvas.height);
     if (!analysis) {
-      showCapacityError(payloadBytes, canvas.width, canvas.height, encrypted);
+      showCapacityError(payloadBytes, canvas.width, canvas.height, encrypted, { isManual: false, mode: null });
       return;
     }
     updateCapacityAnalysisUI(analysis, payloadBytes, encrypted);
@@ -1394,7 +1561,7 @@ function updateManualModeAnalysis(payloadBytes, imageWidth, imageHeight, manualM
   
   if (requiredBits > capacity) {
     // Message too large for manual mode
-    showCapacityError(payloadBytes, imageWidth, imageHeight, encrypted);
+    showCapacityError(payloadBytes, imageWidth, imageHeight, encrypted, { isManual: true, mode: manualMode });
     return;
   }
   
@@ -1444,11 +1611,12 @@ function updateManualModeAnalysis(payloadBytes, imageWidth, imageHeight, manualM
   }
 }
 
-function showCapacityError(payloadBytes, imageWidth, imageHeight, encrypted) {
+function showCapacityError(payloadBytes, imageWidth, imageHeight, encrypted, modeInfo) {
   var capacityAnalysis = document.getElementById('capacity-analysis');
   var usageBar = document.getElementById('usage-bar');
   var capacityStats = document.getElementById('capacity-stats');
   var capacityBadge = document.getElementById('capacity-badge');
+  var autoModeBadge = document.getElementById('auto-mode-badge');
   
   if (!capacityAnalysis || !usageBar || !capacityStats) return;
   
@@ -1466,6 +1634,21 @@ function showCapacityError(payloadBytes, imageWidth, imageHeight, encrypted) {
                               payloadBytes.toLocaleString() + ' ' + kind + ' bytes exceed maximum capacity of ' +
                               maxCapacity.toLocaleString() + ' bytes';
   capacityStats.classList.add('text-danger');
+
+  // Refresh the mode badge so it never shows a stale "Auto: N-LSB" from a
+  // smaller previous payload. In manual mode it reflects the forced mode (so
+  // changing the dropdown is visibly honored); in auto mode no mode fits, so
+  // we show that explicitly rather than a misleading number.
+  if (autoModeBadge) {
+    if (modeInfo && modeInfo.isManual) {
+      autoModeBadge.textContent = 'Manual: ' + modeInfo.mode + '-LSB';
+      autoModeBadge.setAttribute('data-auto-mode', modeInfo.mode);
+    } else {
+      autoModeBadge.textContent = 'Auto: none fits';
+      autoModeBadge.removeAttribute('data-auto-mode');
+    }
+    autoModeBadge.className = 'badge bg-danger';
+  }
 
   // Update capacity badge to show error
   if (capacityBadge) {
@@ -1489,12 +1672,14 @@ function detectLsbMode() {
     var messageLength = parsed.messageLength;
     var isV3 = parsed.isV3;
     var isEncrypted = parsed.isEncrypted;
+    var isCompressed = parsed.isCompressed;
 
     // Update UI (display only - decode does not trust DOM)
     var detector = document.getElementById('decode-mode-detector');
     var modeText = document.getElementById('detected-mode-text');
     var modeIcon = document.getElementById('detected-mode-icon');
     var encBadge = document.getElementById('detected-encrypted-badge');
+    var compBadge = document.getElementById('detected-compressed-badge');
     var pwGroup = document.getElementById('decrypt-password-group');
 
     if (detector && modeText && modeIcon) {
@@ -1506,6 +1691,7 @@ function detectLsbMode() {
       detector.setAttribute('data-detected-mode', detectedMode);
       detector.setAttribute('data-is-v3', isV3);
       detector.setAttribute('data-is-encrypted', isEncrypted);
+      detector.setAttribute('data-is-compressed', isCompressed);
       detector.setAttribute('data-message-length', messageLength);
 
       // Reset manual override to hidden
@@ -1515,6 +1701,7 @@ function detectLsbMode() {
       if (manualSelect) manualSelect.style.display = 'none';
     }
     if (encBadge) encBadge.style.display = isV3 && isEncrypted ? 'inline-block' : 'none';
+    if (compBadge) compBadge.style.display = isV3 && isCompressed ? 'inline-block' : 'none';
     if (pwGroup) pwGroup.style.display = isV3 && isEncrypted ? 'block' : 'none';
   } catch (error) {
     console.error('Mode detection failed:', error);
@@ -1791,56 +1978,84 @@ async function encodeMessage() {
       return;
     }
 
-    // Resolve LSB mode from auto-selection or manual override.
-    var lsbBits = 1;
-    var manualOverride = document.getElementById('manual-mode-override');
-    var isManual = manualOverride && manualOverride.style.display !== 'none';
-    if (isManual) {
-      lsbBits = parseInt(document.getElementById('manual-lsb-mode').value, 10);
-    } else {
-      var autoModeBadge = document.getElementById('auto-mode-badge');
-      if (autoModeBadge) {
-        lsbBits = parseInt(autoModeBadge.getAttribute('data-auto-mode') || 1, 10);
-      }
-    }
-
-    // On-disk payload length (what gets hidden). Encrypted payload is
-    // plaintext + 45; the sentinel's length field holds this value.
-    var payloadLength = encrypted
-      ? messageBytes.length + ENCRYPTION_OVERHEAD_BYTES
-      : messageBytes.length;
-    var availablePixels = (width * height) - SENTINEL_PIXELS;
-    var maxCapacity = Math.floor((availablePixels * lsbBits * 3) / 8);
-
-    if (!validateCapacity(maxCapacity)) {
-      restoreButton();
-      return;
-    }
-    if (payloadLength > maxCapacity) {
-      var kind;
-      if (payloadType === 'file') {
-        kind = encrypted ? 'encrypted file container' : 'file container';
-      } else {
-        kind = encrypted ? 'encrypted payload' : 'message';
-      }
-      var hint = payloadType === 'file'
-        ? 'Please use a larger carrier image or a smaller secret file.'
-        : 'Please use a larger image or shorter message.';
-      showError('Payload too large! Your ' + kind + ' is ' + payloadLength.toLocaleString() +
-                ' bytes but this image can only hide ' + maxCapacity.toLocaleString() +
-                ' bytes with ' + lsbBits + '-LSB mode. ' + hint);
-      restoreButton();
-      return;
-    }
-
     if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined') {
       showError('Web Workers and OffscreenCanvas are required. Please use a modern browser.');
       restoreButton();
       return;
     }
 
-    // Snapshot pixels and canvas contexts synchronously, before any await,
-    // so a mid-operation image swap can't poison the result.
+    var manualOverride = document.getElementById('manual-mode-override');
+    var isManual = manualOverride && manualOverride.style.display !== 'none';
+    var availablePixels = (width * height) - SENTINEL_PIXELS;
+    var maxCapacity4 = Math.floor((availablePixels * MAX_LSB_BITS * 3) / 8);
+
+    // Compression stage (before encryption; ciphertext does not compress).
+    // Compression is manual only - it runs when the user turns the toggle on.
+    // We keep the compressed version only when it actually shrinks the
+    // payload, so already-compressed data never grows.
+    var wantCompress = isCompressionEnabled();
+    var embedBytes = messageBytes;
+    var compressed = false;
+
+    if (wantCompress) {
+      if (!compressionAvailable()) {
+        showError('Compression requires a browser with CompressionStream support (Chrome 80+, Firefox 113+, Safari 16.4+).');
+        restoreButton();
+        return;
+      }
+      setBusy('Compressing...');
+      var deflated;
+      try {
+        deflated = await StegCompress.compress(messageBytes);
+      } catch (err) {
+        if (encodeGeneration !== myGen) { exitStale(); return; }
+        showError('Compression failed: ' + (err && err.message ? err.message : err));
+        restoreButton();
+        return;
+      }
+      if (encodeGeneration !== myGen) { exitStale(); return; }
+      if (deflated.length < messageBytes.length) {
+        embedBytes = deflated;
+        compressed = true;
+      }
+      // else: compression didn't reduce size - store raw (even though the
+      // toggle is on) so we never waste capacity on incompressible data.
+    }
+
+    // On-disk payload length (what gets hidden). Encrypted payload is
+    // embed-bytes + 45; the sentinel's length field holds this value.
+    var payloadLength = embedBytes.length + (encrypted ? ENCRYPTION_OVERHEAD_BYTES : 0);
+
+    // Resolve LSB mode from the final payload size (self-contained; does not
+    // trust the capacity badge) or from the manual override.
+    var lsbBits;
+    if (isManual) {
+      lsbBits = parseInt(document.getElementById('manual-lsb-mode').value, 10);
+    } else {
+      var opt = calculateOptimalLSBMode(payloadLength, width, height);
+      if (!opt) {
+        showCompressionAwareCapacityError(payloadType, encrypted, compressed, wantCompress,
+                                          payloadLength, maxCapacity4);
+        restoreButton();
+        return;
+      }
+      lsbBits = opt.mode;
+    }
+
+    var maxCapacity = Math.floor((availablePixels * lsbBits * 3) / 8);
+    if (!validateCapacity(maxCapacity)) {
+      restoreButton();
+      return;
+    }
+    if (payloadLength > maxCapacity) {
+      showCompressionAwareCapacityError(payloadType, encrypted, compressed, wantCompress,
+                                        payloadLength, maxCapacity);
+      restoreButton();
+      return;
+    }
+
+    // Snapshot pixels and canvas contexts. The generation guard above already
+    // discards results if the image was swapped during the compress await.
     var originalContext = originalCanvas.getContext('2d', { willReadFrequently: true });
     var messageContext = messageCanvas.getContext('2d', { willReadFrequently: true });
     messageCanvas.width = width;
@@ -1848,7 +2063,7 @@ async function encodeMessage() {
     var original = originalContext.getImageData(0, 0, width, height);
     var buffer = original.data.buffer;
 
-    var flags = encrypted ? FLAGS_ENCRYPTED : FLAGS_PLAINTEXT;
+    var flags = composeFlags(encrypted, compressed);
     var payloadBytes;
 
     if (encrypted) {
@@ -1856,7 +2071,7 @@ async function encodeMessage() {
       var sentinelAad = buildSentinelBytes(lsbBits, flags, payloadLength);
       var password = document.getElementById('encrypt-password').value;
       try {
-        payloadBytes = await StegCrypto.encryptPayload(messageBytes, password, sentinelAad);
+        payloadBytes = await StegCrypto.encryptPayload(embedBytes, password, sentinelAad);
       } catch (err) {
         if (encodeGeneration !== myGen) { exitStale(); return; }
         showError(err.message || 'Encryption failed.');
@@ -1866,7 +2081,7 @@ async function encodeMessage() {
       if (encodeGeneration !== myGen) { exitStale(); return; }
       setBusy('Encoding...');
     } else {
-      payloadBytes = messageBytes;
+      payloadBytes = embedBytes;
     }
 
     // Binary preview reflects the on-disk payload bits.
@@ -1886,7 +2101,7 @@ async function encodeMessage() {
     DOWNLOAD_CACHE.building['encoded'] = true;
     updateDownloadAvailability();
 
-    var worker = startWorker('encode', 'lsb-encode-worker.js?v=2');
+    var worker = startWorker('encode', 'lsb-encode-worker.js?v=3');
     worker.onmessage = function(ev) {
       finishWorker('encode', worker);
       if (encodeGeneration !== myGen) {
@@ -2016,7 +2231,7 @@ function decodeMessage() {
     var buffer = original.data.buffer;
 
     decodeWorkerPending = true;
-    var worker = startWorker('decode', 'lsb-decode-worker.js?v=3');
+    var worker = startWorker('decode', 'lsb-decode-worker.js?v=4');
     worker.onmessage = function(ev) {
       finishWorker('decode', worker);
       if (decodeGeneration !== myGen) { exitStale(); return; }
@@ -2030,10 +2245,16 @@ function decodeMessage() {
       var lsbBits = ev.data.lsbBits;
       var maxCapacity = ev.data.maxCapacity;
       var flags = ev.data.flags;
+      var wasCompressed = !!ev.data.compressed;
 
       if (ev.data.encrypted) {
         if (!cryptoAvailable()) {
           showError('This image is encrypted but the Web Crypto API is unavailable. Load the page over HTTPS or localhost.', 'decode');
+          restoreButton();
+          return;
+        }
+        if (wasCompressed && !compressionAvailable()) {
+          showError('This image is compressed but CompressionStream is unavailable in this browser.', 'decode');
           restoreButton();
           return;
         }
@@ -2049,31 +2270,23 @@ function decodeMessage() {
         var sentinelAad = buildSentinelBytes(lsbBits, flags, messageLength);
         StegCrypto.decryptPayload(payloadBytes, password, sentinelAad).then(function(plaintext) {
           if (decodeGeneration !== myGen) { exitStale(); return; }
-          // Decrypted bytes may be either a text message or a hidden file.
-          // The container magic is invalid UTF-8, so the sniff is safe to
-          // run before the fatal UTF-8 decode.
-          if (hasFileContainerMagic(plaintext)) {
-            var container;
-            try { container = parseFileContainer(plaintext); }
-            catch (containerErr) {
-              showError('Hidden file container is corrupted: ' + containerErr.message, 'decode');
-              restoreButton();
-              return;
-            }
-            renderDecodedFile(container, plaintext.length, messageLength, lsbBits, maxCapacity, true);
+          // Decrypted bytes are the embed payload: either the logical content
+          // directly, or (if compressed) deflate-raw bytes to inflate first.
+          if (!wasCompressed) {
+            renderDecodedPayloadBytes(plaintext, messageLength, lsbBits, maxCapacity, true, false);
             restoreButton();
             return;
           }
-          var text;
-          try {
-            text = sanitizeDecodedMessage(DECODE_TEXT_DECODER.decode(plaintext));
-          } catch (utf8Err) {
-            showError('Decrypted bytes are not valid UTF-8. The image may be corrupted.', 'decode');
+          setBusy('Decompressing...');
+          StegCompress.decompress(plaintext, MAX_MESSAGE_LENGTH).then(function(inflated) {
+            if (decodeGeneration !== myGen) { exitStale(); return; }
+            renderDecodedPayloadBytes(inflated, messageLength, lsbBits, maxCapacity, true, true);
             restoreButton();
-            return;
-          }
-          renderDecodeOutput(text, plaintext.length, messageLength, lsbBits, maxCapacity, true);
-          restoreButton();
+          }).catch(function(derr) {
+            if (decodeGeneration !== myGen) { exitStale(); return; }
+            showError('Failed to decompress the hidden payload: ' + (derr && derr.message ? derr.message : derr), 'decode');
+            restoreButton();
+          });
         }).catch(function(err) {
           if (decodeGeneration !== myGen) { exitStale(); return; }
           showError(err.message || 'Wrong password or corrupted image.', 'decode');
@@ -2082,7 +2295,29 @@ function decodeMessage() {
         return;
       }
 
-      // Plaintext path: worker signals kind=file or kind=text (default).
+      // Plaintext-but-compressed: inflate the raw bytes on the main thread,
+      // then disambiguate file vs text.
+      if (wasCompressed) {
+        if (!compressionAvailable()) {
+          showError('This image is compressed but CompressionStream is unavailable in this browser.', 'decode');
+          restoreButton();
+          return;
+        }
+        setBusy('Decompressing...');
+        var rawCompressed = new Uint8Array(ev.data.payloadBytes);
+        StegCompress.decompress(rawCompressed, MAX_MESSAGE_LENGTH).then(function(inflated) {
+          if (decodeGeneration !== myGen) { exitStale(); return; }
+          renderDecodedPayloadBytes(inflated, messageLength, lsbBits, maxCapacity, false, true);
+          restoreButton();
+        }).catch(function(derr) {
+          if (decodeGeneration !== myGen) { exitStale(); return; }
+          showError('Failed to decompress the hidden payload: ' + (derr && derr.message ? derr.message : derr), 'decode');
+          restoreButton();
+        });
+        return;
+      }
+
+      // Plaintext, uncompressed: the worker already disambiguated file/text.
       if (ev.data.kind === 'file') {
         var fileContainer = {
           filename: ev.data.filename,
@@ -2092,11 +2327,11 @@ function decodeMessage() {
           storedCrc: ev.data.storedCrc,
           version: ev.data.containerVersion
         };
-        renderDecodedFile(fileContainer, messageLength, messageLength, lsbBits, maxCapacity, false);
+        renderDecodedFile(fileContainer, messageLength, messageLength, lsbBits, maxCapacity, false, false);
         restoreButton();
         return;
       }
-      renderDecodeOutput(ev.data.output, messageLength, messageLength, lsbBits, maxCapacity, false);
+      renderDecodeOutput(ev.data.output, messageLength, messageLength, lsbBits, maxCapacity, false, false);
       restoreButton();
     };
     worker.onerror = function(err) {
@@ -2119,8 +2354,38 @@ function decodeMessage() {
   }
 }
 
+// Disambiguates fully-decrypted + inflated payload bytes as a file container
+// or UTF-8 text and renders the matching card. The container magic is invalid
+// UTF-8, so the sniff is safe to run before the fatal UTF-8 decode. On a
+// structural/UTF-8 error it surfaces a decode error; the caller always calls
+// restoreButton afterward regardless.
+function renderDecodedPayloadBytes(bytes, storedLength, lsbBits, maxCapacity, encrypted, compressed) {
+  if (hasFileContainerMagic(bytes)) {
+    var container;
+    try {
+      container = parseFileContainer(bytes);
+    } catch (containerErr) {
+      showError('Hidden file container is corrupted: ' + containerErr.message, 'decode');
+      return;
+    }
+    renderDecodedFile(container, bytes.length, storedLength, lsbBits, maxCapacity, encrypted, compressed);
+    return;
+  }
+  var text;
+  try {
+    text = sanitizeDecodedMessage(DECODE_TEXT_DECODER.decode(bytes));
+  } catch (utf8Err) {
+    showError(encrypted
+      ? 'Decrypted bytes are not valid UTF-8. The image may be corrupted.'
+      : 'Decoded bytes are not valid UTF-8. The image may be corrupted.', 'decode');
+    return;
+  }
+  renderDecodeOutput(text, bytes.length, storedLength, lsbBits, maxCapacity, encrypted, compressed);
+}
+
 // Shared capacity-bar renderer for both text and file decode results.
-function renderDecodeCapacityBar(storedLength, lsbBits, maxCapacity, encrypted, plaintextLength, kind) {
+// plaintextLength is the logical content size after decrypt + inflate.
+function renderDecodeCapacityBar(storedLength, lsbBits, maxCapacity, encrypted, plaintextLength, kind, compressed) {
   var utilizationPercent = Math.round((storedLength / maxCapacity) * 100);
   var availablePercent = 100 - utilizationPercent;
 
@@ -2134,14 +2399,23 @@ function renderDecodeCapacityBar(storedLength, lsbBits, maxCapacity, encrypted, 
                maxCapacity.toLocaleString() + ' total capacity (' + lsbBits + '-LSB mode). ' +
                (maxCapacity - storedLength).toLocaleString() + ' bytes unused.';
   if (encrypted) {
-    detail += ' Encrypted ' + kindLabel + ': ' + storedLength.toLocaleString() + ' bytes on disk, ' +
+    detail += ' Encrypted' + (compressed ? ' + compressed' : '') + ' ' + kindLabel + '.';
+  }
+  if (compressed) {
+    var ratio = plaintextLength > 0
+      ? Math.max(0, Math.round((1 - (storedLength / plaintextLength)) * 100))
+      : 0;
+    detail += ' Compressed: ' + storedLength.toLocaleString() + ' bytes stored, decompressed to ' +
+              plaintextLength.toLocaleString() + ' bytes (' + ratio + '% smaller on disk).';
+  } else if (encrypted) {
+    detail += ' ' + storedLength.toLocaleString() + ' bytes on disk, ' +
               plaintextLength.toLocaleString() + ' bytes plaintext (45 bytes overhead).';
   }
   document.getElementById('decode-capacity-details').textContent = detail;
   document.querySelector('.decode-capacity-bar').style.display = 'block';
 }
 
-function renderDecodeOutput(text, plaintextLength, storedLength, lsbBits, maxCapacity, encrypted) {
+function renderDecodeOutput(text, plaintextLength, storedLength, lsbBits, maxCapacity, encrypted, compressed) {
   // Hide the file-decode block in case a previous decode populated it.
   var fileBlock = document.querySelector('.file-decode');
   if (fileBlock) fileBlock.style.display = 'none';
@@ -2152,7 +2426,7 @@ function renderDecodeOutput(text, plaintextLength, storedLength, lsbBits, maxCap
   }
   LAST_DECODED_FILE = null;
 
-  renderDecodeCapacityBar(storedLength, lsbBits, maxCapacity, encrypted, plaintextLength, 'text');
+  renderDecodeCapacityBar(storedLength, lsbBits, maxCapacity, encrypted, plaintextLength, 'text', compressed);
 
   document.getElementById('decoded-message-text').textContent = text;
   document.querySelector('.binary-decode').style.display = 'block';
@@ -2168,14 +2442,14 @@ function renderDecodeOutput(text, plaintextLength, storedLength, lsbBits, maxCap
 // a browser-decodable image. storedLength is the on-disk payload length
 // (container, or encrypted-wrapped container); plaintextLength is the
 // container length (ignored when === storedLength for plaintext payloads).
-function renderDecodedFile(container, plaintextLength, storedLength, lsbBits, maxCapacity, encrypted) {
+function renderDecodedFile(container, plaintextLength, storedLength, lsbBits, maxCapacity, encrypted, compressed) {
   // Hide the text block in case a previous decode populated it.
   var textBlock = document.querySelector('.binary-decode');
   if (textBlock) textBlock.style.display = 'none';
   setDecodedActionsEnabled(false);
   LAST_DECODED_TEXT = '';
 
-  renderDecodeCapacityBar(storedLength, lsbBits, maxCapacity, encrypted, plaintextLength, 'file');
+  renderDecodeCapacityBar(storedLength, lsbBits, maxCapacity, encrypted, plaintextLength, 'file', compressed);
 
   var filename = container.filename || 'secret.bin';
   var mime = container.mimeType || 'application/octet-stream';

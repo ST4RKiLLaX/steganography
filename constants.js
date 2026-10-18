@@ -17,8 +17,19 @@ var MAGIC_BYTES = [0xAA, 0x55];
 var MIN_LSB_BITS = 1;
 var MAX_LSB_BITS = 4;
 
+// 4-bit flags field (sentinel bits 20-23), MSB-first as a string:
+//   bit 20 (index 0) = encrypted
+//   bit 21 (index 1) = compressed (deflate-raw, applied before encryption)
+//   bits 22-23       = reserved, must be 0
 var FLAGS_PLAINTEXT = '0000';
 var FLAGS_ENCRYPTED = '1000';            // bit 20 = "encrypted"
+var FLAGS_COMPRESSED = '0100';           // bit 21 = "compressed"
+var FLAGS_ENCRYPTED_COMPRESSED = '1100'; // both
+
+// Build the 4-char flags string from booleans. Keeps bits 22-23 zero.
+function composeFlags(encrypted, compressed) {
+  return (encrypted ? '1' : '0') + (compressed ? '1' : '0') + '00';
+}
 
 var MAX_MESSAGE_LENGTH = 10000000;       // 10MB plaintext byte limit (UTF-8)
 var MAX_THEORETICAL_EMBED_CAPACITY_BYTES = 150000000;  // ~150MB safety cap
@@ -59,8 +70,10 @@ var FILE_CONTAINER_FIXED_OVERHEAD = 14;  // 4 magic + 1 ver + 1 flags + 2 fn-len
 var FILE_CONTAINER_MAX_FILENAME_BYTES = 1024;
 var FILE_CONTAINER_MAX_MIME_BYTES = 256;
 
+// Valid flags: encrypted (bit 20) and/or compressed (bit 21) may be set;
+// reserved bits 22-23 must be zero. Accepts 0000, 0100, 1000, 1100.
 function isValidFlags(flags) {
-  return flags === FLAGS_PLAINTEXT || flags === FLAGS_ENCRYPTED;
+  return typeof flags === 'string' && /^[01][01]00$/.test(flags);
 }
 
 // Classic CRC-32 (IEEE 802.3 / zlib polynomial 0xEDB88320). DOM-free; used
@@ -274,7 +287,8 @@ function parseSentinelFromPixels(pixel) {
     lsbBits: lsbBits,
     flags: flags,
     flagsValid: isV3 && isValidFlags(flags),
-    isEncrypted: flags === FLAGS_ENCRYPTED,
+    isEncrypted: isV3 && flags.charAt(0) === '1',
+    isCompressed: isV3 && flags.charAt(1) === '1',
     messageLength: messageLength
   };
 }

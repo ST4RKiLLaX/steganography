@@ -1,4 +1,4 @@
-importScripts('constants.js?v=4');
+importScripts('constants.js?v=5');
 
 self.onmessage = function(e) {
   if (e.data.type !== 'encode') return;

@@ -316,6 +316,22 @@
 
             <div class="mb-3">
               <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" role="switch" id="compress-toggle">
+                <label class="form-check-label" for="compress-toggle">
+                  <strong>Compress payload</strong> (deflate)
+                </label>
+              </div>
+              <small class="text-muted d-block mt-1">
+                Shrinks text and files before embedding to fit more in the image. Leave off to store the payload as-is.
+              </small>
+              <small id="compression-note" class="small mt-1" style="display: none;" aria-live="polite"></small>
+              <div id="compress-unavailable" class="alert alert-warning py-2 mt-2 mb-0" style="display: none;">
+                Compression requires the <code>CompressionStream</code> API, which this browser does not support.
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" role="switch" id="encrypt-toggle">
                 <label class="form-check-label" for="encrypt-toggle">
                   <strong>Encrypt with password</strong> (AES-256-GCM)
@@ -435,6 +451,7 @@
             <span id="detected-mode-icon">✓</span>
             <strong>Detected:</strong> <span id="detected-mode-text">1-LSB</span> encoding
             <span id="detected-encrypted-badge" class="badge bg-dark ms-1" style="display: none;">🔒 Encrypted</span>
+            <span id="detected-compressed-badge" class="badge bg-secondary ms-1" style="display: none;">🗜️ Compressed</span>
             <button class="btn btn-sm btn-link py-0" id="manual-override-btn">Override</button>
           </div>
           
@@ -677,8 +694,9 @@
 
   <script src="theme.js?v=1"></script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI" crossorigin="anonymous"></script>
-  <script src="constants.js?v=4"></script>
+  <script src="constants.js?v=5"></script>
   <script src="crypto.js?v=1"></script>
-  <script type="text/JavaScript" src="script.js?v=29"></script>
+  <script src="compress.js?v=1"></script>
+  <script type="text/JavaScript" src="script.js?v=32"></script>
 </body>
 </html>

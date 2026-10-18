@@ -30,8 +30,9 @@
   <div id="summary" class="pending">Running...</div>
   <div id="results"></div>
 
-  <script src="constants.js?v=4"></script>
+  <script src="constants.js?v=5"></script>
   <script src="crypto.js?v=1"></script>
+  <script src="compress.js?v=1"></script>
   <script>
     const summary = document.getElementById('summary');
     const results = document.getElementById('results');
@@ -61,7 +62,7 @@
 
     function runEncode(pixels, width, height, messageBytes, lsbBits, flags) {
       return new Promise((resolve, reject) => {
-        const worker = new Worker('lsb-encode-worker.js?v=2');
+        const worker = new Worker('lsb-encode-worker.js?v=3');
         worker.onmessage = (ev) => {
           worker.terminate();
           if (ev.data.type === 'error') { reject(new Error(ev.data.message)); return; }
@@ -81,7 +82,7 @@
 
     function runDecode(buffer, width, height) {
       return new Promise((resolve, reject) => {
-        const worker = new Worker('lsb-decode-worker.js?v=3');
+        const worker = new Worker('lsb-decode-worker.js?v=4');
         worker.onmessage = (ev) => {
           worker.terminate();
           if (ev.data.type === 'error') { reject(new Error(ev.data.message)); return; }
@@ -380,6 +381,135 @@
         reportCase('encrypted one byte over capacity rejected', !fits,
           fits ? 'payload fit when it should not have' : '');
       } catch (err) { reportCase('encrypted one byte over capacity rejected', false, err.message); }
+
+      // --- Compression ---
+      section('Compression (deflate-raw)');
+      if (!StegCompress.isCompressionAvailable()) {
+        reportCase('CompressionStream available', false, 'this browser lacks CompressionStream');
+      } else {
+        reportCase('CompressionStream available', true);
+
+        // Flag helpers.
+        reportCase('composeFlags combinations',
+          composeFlags(false, false) === FLAGS_PLAINTEXT &&
+          composeFlags(true, false) === FLAGS_ENCRYPTED &&
+          composeFlags(false, true) === FLAGS_COMPRESSED &&
+          composeFlags(true, true) === FLAGS_ENCRYPTED_COMPRESSED,
+          'flag strings did not match constants');
+        reportCase('isValidFlags accepts all 4 combos',
+          isValidFlags(FLAGS_PLAINTEXT) && isValidFlags(FLAGS_ENCRYPTED) &&
+          isValidFlags(FLAGS_COMPRESSED) && isValidFlags(FLAGS_ENCRYPTED_COMPRESSED));
+        reportCase('isValidFlags rejects reserved bits set',
+          !isValidFlags('0010') && !isValidFlags('0001') && !isValidFlags('1111'));
+
+        // compress/decompress round trips.
+        async function compressRoundTrip(label, bytes) {
+          try {
+            const def = await StegCompress.compress(bytes);
+            const inf = await StegCompress.decompress(def, MAX_MESSAGE_LENGTH);
+            if (inf.length !== bytes.length) return reportCase(label, false, 'length ' + inf.length + ' != ' + bytes.length);
+            for (let i = 0; i < bytes.length; i++) {
+              if (inf[i] !== bytes[i]) return reportCase(label, false, 'byte mismatch at ' + i);
+            }
+            reportCase(label, true);
+          } catch (err) { reportCase(label, false, err.message); }
+        }
+        try {
+          let threw = false;
+          try { await StegCompress.compress(new Uint8Array(0)); }
+          catch (err) { threw = true; }
+          reportCase('compress rejects empty input', threw,
+            threw ? '' : 'empty input did not throw');
+        } catch (err) { reportCase('compress rejects empty input', false, err.message); }
+        await compressRoundTrip('compress single byte', new Uint8Array([0x42]));
+        await compressRoundTrip('compress highly compressible',
+          new TextEncoder().encode(repeatText('A', 20000)));
+        const randomBytes = new Uint8Array(8192);
+        for (let i = 0; i < randomBytes.length; i++) randomBytes[i] = (i * 2654435761) & 0xFF;
+        await compressRoundTrip('compress pseudo-random', randomBytes);
+        await compressRoundTrip('compress utf8 text',
+          new TextEncoder().encode(repeatText('naïve café résumé 🙂 ', 500)));
+
+        reportCase('compressible payload shrinks', await (async () => {
+          const bytes = new TextEncoder().encode(repeatText('repeat me ', 5000));
+          const def = await StegCompress.compress(bytes);
+          return def.length < bytes.length;
+        })());
+
+        // Decompression-bomb cap: inflating past the cap must reject.
+        try {
+          const bytes = new TextEncoder().encode(repeatText('Z', 50000));
+          const def = await StegCompress.compress(bytes);
+          let threw = false;
+          try { await StegCompress.decompress(def, 1000); }
+          catch (err) { threw = true; }
+          reportCase('decompress enforces output cap (bomb guard)', threw,
+            threw ? '' : 'inflated past the cap without error');
+        } catch (err) { reportCase('decompress output cap', false, err.message); }
+
+        // Full plaintext + compressed LSB round trip through the workers.
+        async function compressedPlaintextRoundTrip(label, text, lsbBits) {
+          try {
+            const raw = new TextEncoder().encode(text);
+            const deflated = await StegCompress.compress(raw);
+            const enc = await runEncode(makePixels(width, height), width, height, deflated, lsbBits, FLAGS_COMPRESSED);
+            const dec = await runDecode(enc.buffer, enc.width, enc.height);
+            if (dec.encrypted) return reportCase(label, false, 'unexpectedly flagged encrypted');
+            if (!dec.compressed) return reportCase(label, false, 'decode did not flag compressed');
+            if (dec.flags !== FLAGS_COMPRESSED) return reportCase(label, false, 'flags=' + dec.flags);
+            const back = new Uint8Array(dec.payloadBytes);
+            const inflated = await StegCompress.decompress(back, MAX_MESSAGE_LENGTH);
+            const got = new TextDecoder('utf-8', { fatal: true }).decode(inflated);
+            reportCase(label, got === text, got === text ? '' : 'text mismatch');
+          } catch (err) { reportCase(label, false, err.message); }
+        }
+        for (const lsb of modes) {
+          await compressedPlaintextRoundTrip('compressed plaintext lsb=' + lsb,
+            repeatText('compress + hide ', 400), lsb);
+        }
+        await compressedPlaintextRoundTrip('compressed plaintext utf8 2-LSB',
+          repeatText('naïve café 🙂 ', 300), 2);
+
+        // Full encrypted + compressed LSB round trip (compress -> encrypt).
+        async function compressedEncryptedRoundTrip(label, text, lsbBits) {
+          try {
+            const raw = new TextEncoder().encode(text);
+            const deflated = await StegCompress.compress(raw);
+            const payloadLength = deflated.length + ENCRYPTION_OVERHEAD_BYTES;
+            const aad = buildSentinelBytes(lsbBits, FLAGS_ENCRYPTED_COMPRESSED, payloadLength);
+            const payload = await StegCrypto.encryptPayload(deflated, pw, aad);
+            const enc = await runEncode(makePixels(width, height), width, height, payload, lsbBits, FLAGS_ENCRYPTED_COMPRESSED);
+            const dec = await runDecode(enc.buffer, enc.width, enc.height);
+            if (!dec.encrypted) return reportCase(label, false, 'not flagged encrypted');
+            if (!dec.compressed) return reportCase(label, false, 'not flagged compressed');
+            if (dec.flags !== FLAGS_ENCRYPTED_COMPRESSED) return reportCase(label, false, 'flags=' + dec.flags);
+            const aad2 = buildSentinelBytes(dec.lsbBits, dec.flags, dec.messageLength);
+            const decrypted = await StegCrypto.decryptPayload(new Uint8Array(dec.payloadBytes), pw, aad2);
+            const inflated = await StegCompress.decompress(decrypted, MAX_MESSAGE_LENGTH);
+            const got = new TextDecoder('utf-8', { fatal: true }).decode(inflated);
+            reportCase(label, got === text, got === text ? '' : 'text mismatch');
+          } catch (err) { reportCase(label, false, err.message); }
+        }
+        for (const lsb of modes) {
+          await compressedEncryptedRoundTrip('compressed+encrypted lsb=' + lsb,
+            repeatText('secret compressed ', 300), lsb);
+        }
+
+        // A compressed file container round trips (compress -> hide -> inflate -> parse).
+        try {
+          const fileBytes = new TextEncoder().encode(repeatText('file body ', 2000));
+          const container = buildFileContainer(fileBytes, 'notes.txt', 'text/plain');
+          const deflated = await StegCompress.compress(container);
+          const enc = await runEncode(makePixels(width, height), width, height, deflated, 2, FLAGS_COMPRESSED);
+          const dec = await runDecode(enc.buffer, enc.width, enc.height);
+          const back = await StegCompress.decompress(new Uint8Array(dec.payloadBytes), MAX_MESSAGE_LENGTH);
+          const parsed = parseFileContainer(back);
+          const ok = parsed.filename === 'notes.txt' && parsed.mimeType === 'text/plain' &&
+            parsed.crcValid && parsed.fileBytes.length === fileBytes.length;
+          reportCase('compressed file container round trip', ok,
+            ok ? '' : 'container fields mismatch');
+        } catch (err) { reportCase('compressed file container round trip', false, err.message); }
+      }
 
       summary.className = fail === 0 ? 'pass' : 'fail';
       summary.textContent = fail === 0
