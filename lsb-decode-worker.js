@@ -1,4 +1,4 @@
-importScripts('constants.js?v=3');
+importScripts('constants.js?v=4');
 
 var TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
@@ -92,7 +92,9 @@ self.onmessage = function(e) {
 
     if (isEncrypted) {
       // Validate payload framing (version, length) before passing to the
-      // main thread so a bad payload never reaches PBKDF2.
+      // main thread so a bad payload never reaches PBKDF2. The container
+      // sniff happens on the main thread after decryption, since the
+      // worker cannot see plaintext here.
       if (byteArray[0] !== ENCRYPTION_PAYLOAD_VERSION) {
         self.postMessage({ type: 'error', message: 'Unsupported encryption version: ' + byteArray[0] + '.' });
         return;
@@ -109,11 +111,50 @@ self.onmessage = function(e) {
       return;
     }
 
+    // Plaintext path: sniff the file-container magic before UTF-8 decode.
+    // A payload that starts with FILE_CONTAINER_MAGIC is a hidden file and
+    // must not go through TextDecoder - most binary files aren't valid
+    // UTF-8 and would throw. Legacy text payloads can't collide with the
+    // magic because 0xF1 0x1E 0x00 0x01 is an invalid UTF-8 start.
+    if (hasFileContainerMagic(byteArray)) {
+      var container;
+      try {
+        container = parseFileContainer(byteArray);
+      } catch (containerErr) {
+        self.postMessage({
+          type: 'error',
+          message: 'Hidden file container is corrupted: ' + containerErr.message
+        });
+        return;
+      }
+      // Copy the file bytes into a fresh ArrayBuffer so we can transfer
+      // ownership to the main thread (subarray would share the parent).
+      var fileCopy = new Uint8Array(container.fileBytes.length);
+      fileCopy.set(container.fileBytes);
+      self.postMessage({
+        type: 'result',
+        encrypted: false,
+        kind: 'file',
+        fileBytes: fileCopy.buffer,
+        filename: container.filename,
+        mimeType: container.mimeType,
+        crcValid: container.crcValid,
+        storedCrc: container.storedCrc,
+        containerVersion: container.version,
+        messageLength: messageLength,
+        lsbBits: lsbBits,
+        flags: flags,
+        maxCapacity: maxCapacity
+      }, [fileCopy.buffer]);
+      return;
+    }
+
     var output = sanitizeDecodedMessage(TEXT_DECODER.decode(byteArray));
 
     self.postMessage({
       type: 'result',
       encrypted: false,
+      kind: 'text',
       output: output,
       messageLength: messageLength,
       lsbBits: lsbBits,

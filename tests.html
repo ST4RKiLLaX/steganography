@@ -30,7 +30,7 @@
   <div id="summary" class="pending">Running...</div>
   <div id="results"></div>
 
-  <script src="constants.js?v=3"></script>
+  <script src="constants.js?v=4"></script>
   <script src="crypto.js?v=1"></script>
   <script>
     const summary = document.getElementById('summary');
@@ -81,7 +81,7 @@
 
     function runDecode(buffer, width, height) {
       return new Promise((resolve, reject) => {
-        const worker = new Worker('lsb-decode-worker.js?v=2');
+        const worker = new Worker('lsb-decode-worker.js?v=3');
         worker.onmessage = (ev) => {
           worker.terminate();
           if (ev.data.type === 'error') { reject(new Error(ev.data.message)); return; }
